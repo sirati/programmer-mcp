@@ -1,0 +1,158 @@
+{
+    "mcpServers": {
+        "language-nix-nil": {
+            "command": "systemd-run",
+            "args": [
+                "--scope",
+                "--user",
+                "-p",
+                "MemoryMax=1G",
+                "-p",
+                "MemorySwapMax=2G",
+                "mcp-language-server",
+                "--workspace",
+                "./",
+                "--lsp",
+                "nil",
+                "--",
+                "--stdio"
+            ]
+        },
+        "language-nix-nixd": {
+            "command": "systemd-run",
+            "args": [
+                "--scope",
+                "--user",
+                "-p",
+                "MemoryMax=1G",
+                "-p",
+                "MemorySwapMax=2G",
+                "mcp-language-server",
+                "--workspace",
+                "./",
+                "--lsp",
+                "nixd"
+            ]
+        },
+        "language-json": {
+            "command": "systemd-run",
+            "args": [
+                "--scope",
+                "--user",
+                "-p",
+                "MemoryMax=1G",
+                "-p",
+                "MemorySwapMax=2G",
+                "mcp-language-server",
+                "--workspace",
+                "./",
+                "--lsp",
+                "vscode-json-languageserver",
+                "--",
+                "--stdio"
+            ]
+        },
+        "language-bash": {
+            "command": "systemd-run",
+            "args": [
+                "--scope",
+                "--user",
+                "-p",
+                "MemoryMax=1G",
+                "-p",
+                "MemorySwapMax=2G",
+                "mcp-language-server",
+                "--workspace",
+                "./",
+                "--lsp",
+                "bash-language-server",
+                "--",
+                "start"
+            ]
+        },
+        "language-rust": {
+            "command": "systemd-run",
+            "args": [
+                "--scope",
+                "--user",
+                "-p",
+                "MemoryMax=4G",
+                "-p",
+                "MemorySwapMax=8G",
+                "mcp-language-server",
+                "--workspace",
+                "./",
+                "--lsp",
+                "rust-analyzer"
+            ]
+        },
+        "language-rust-lib-src-lsp-types": {
+            "command": "systemd-run",
+            "args": [
+                "--scope",
+                "--user",
+                "-p",
+                "MemoryMax=4G",
+                "-p",
+                "MemorySwapMax=8G",
+                "bash",
+                "-lc",
+                "cd ./ref-srcs/lsp-types && exec mcp-language-server --workspace ./ --lsp rust-analyzer"
+            ]
+        },
+        "language-rust-lib-src-mcp": {
+            "command": "systemd-run",
+            "args": [
+                "--scope",
+                "--user",
+                "-p",
+                "MemoryMax=4G",
+                "-p",
+                "MemorySwapMax=8G",
+                "bash",
+                "-lc",
+                "cd ./ref-srcs/rust-sdk && exec mcp-language-server --workspace ./ --lsp rust-analyzer"
+            ]
+        },
+        "language-rust-lib-ref-impl-lsp-client": {
+            "command": "systemd-run",
+            "args": [
+                "--scope",
+                "--user",
+                "-p",
+                "MemoryMax=4G",
+                "-p",
+                "MemorySwapMax=8G",
+                "bash",
+                "-lc",
+                "cd ./ref-srcs/lsp-client && exec mcp-language-server --workspace ./ --lsp rust-analyzer"
+            ]
+        },
+        "language-go-ref-impl": {
+            "command": "systemd-run",
+            "args": [
+                "--scope",
+                "--user",
+                "-p",
+                "MemoryMax=2G",
+                "-p",
+                "MemorySwapMax=4G",
+                "bash",
+                "-lc",
+                "cd ./ref-srcs/mcp-language-server && exec gopls mcp"
+            ]
+        },
+        "nix-online": {
+            "command": "systemd-run",
+            "args": [
+                "--scope",
+                "--user",
+                "-p",
+                "MemoryMax=1G",
+                "-p",
+                "MemorySwapMax=2G",
+                "mcp-nixos"
+            ]
+        }
+    }
+}
