@@ -82,15 +82,40 @@ async fn test_debug_start(
     }
 }
 
-/// Delete our own binary, copy the build artifact there, and return the new path.
+/// Safely replace the current binary with a new build artifact.
+///
+/// Strategy: move old binary aside, copy new one in, verify, then delete old.
+/// On failure, move the old binary back so we never end up with nothing.
 fn replace_self_binary(binary_src: &Path) -> anyhow::Result<PathBuf> {
     let self_path = std::env::current_exe()
         .map_err(|e| anyhow::anyhow!("cannot determine own executable path: {e}"))?;
-    // Remove the old file so we can write the new one (works on Linux; old inode stays mapped).
-    let _ = std::fs::remove_file(&self_path);
-    std::fs::copy(binary_src, &self_path).map_err(|e| {
-        anyhow::anyhow!("failed to copy new binary to {}: {e}", self_path.display())
-    })?;
+    let backup_path = self_path.with_extension("old");
+
+    // Step 1: move current binary aside
+    if self_path.exists() {
+        std::fs::rename(&self_path, &backup_path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to move old binary to {}: {e}",
+                backup_path.display()
+            )
+        })?;
+    }
+
+    // Step 2: copy new binary in
+    let copy_result = std::fs::copy(binary_src, &self_path);
+
+    // Step 3: verify the new binary exists
+    if copy_result.is_err() || !self_path.exists() {
+        // Restore old binary
+        if backup_path.exists() {
+            let _ = std::fs::rename(&backup_path, &self_path);
+        }
+        let err = copy_result.err().map(|e| e.to_string()).unwrap_or_default();
+        anyhow::bail!(
+            "failed to copy new binary to {}: {err}",
+            self_path.display()
+        );
+    }
 
     #[cfg(unix)]
     {
@@ -99,6 +124,9 @@ fn replace_self_binary(binary_src: &Path) -> anyhow::Result<PathBuf> {
         perms.set_mode(perms.mode() | 0o111);
         std::fs::set_permissions(&self_path, perms)?;
     }
+
+    // Step 4: delete the backup
+    let _ = std::fs::remove_file(&backup_path);
 
     Ok(self_path)
 }

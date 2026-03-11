@@ -1,5 +1,6 @@
 mod config;
 mod debug;
+mod ipc;
 mod lsp;
 mod server;
 mod tools;
@@ -17,6 +18,25 @@ use server::ProgrammerServer;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Check for `-- message` mode: send message to running instance and exit
+    let raw_args: Vec<String> = std::env::args().collect();
+    if let Some(sep) = raw_args.iter().position(|a| a == "--") {
+        let message = raw_args[sep + 1..].join(" ");
+        if message.is_empty() {
+            anyhow::bail!("no message provided after --");
+        }
+        // We need --workspace to know the socket path
+        let workspace = raw_args
+            .iter()
+            .position(|a| a == "--workspace")
+            .and_then(|i| raw_args.get(i + 1))
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("--workspace is required when sending messages"))?;
+        let workspace = workspace.canonicalize()?;
+        ipc::send_message(&workspace, &message).await?;
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::DEBUG.into()))
         .with_writer(std::io::stderr)
@@ -58,6 +78,7 @@ async fn run_normal_server(config: Config) -> anyhow::Result<()> {
     std::env::set_current_dir(&config.workspace)?;
 
     let manager = Arc::new(LspManager::start(&config.lsp_specs, &config.workspace).await?);
+    let message_bus = ipc::HumanMessageBus::start(&config.workspace);
 
     let watcher_manager = manager.clone();
     let workspace = config.workspace.clone();
@@ -67,7 +88,7 @@ async fn run_normal_server(config: Config) -> anyhow::Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let mcp_server = ProgrammerServer::new(manager.clone());
+    let mcp_server = ProgrammerServer::new(manager.clone(), message_bus);
     let service = mcp_server.serve(stdio()).await.inspect_err(|e| {
         tracing::error!("MCP serve error: {e:?}");
     })?;

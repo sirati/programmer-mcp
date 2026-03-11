@@ -3,6 +3,7 @@ use std::sync::Arc;
 use lsp_types::{HoverContents, MarkedString};
 
 use super::formatting::{path_to_uri, to_lsp_position};
+use super::language_specific;
 use crate::lsp::client::{LspClient, LspClientError};
 
 /// Get hover information at a specific position in a file.
@@ -20,7 +21,10 @@ pub async fn get_hover_info(
     let hover = client.hover(&uri, position).await?;
 
     match hover {
-        Some(h) => Ok(format_hover_contents(&h.contents)),
+        Some(h) => Ok(clean_hover_text(
+            client.language(),
+            &format_hover_contents(&h.contents),
+        )),
         None => Ok(format!(
             "No hover information available at {file_path}:{line}:{column}"
         )),
@@ -28,7 +32,7 @@ pub async fn get_hover_info(
 }
 
 fn format_hover_contents(contents: &HoverContents) -> String {
-    let raw = match contents {
+    match contents {
         HoverContents::Scalar(marked) => format_marked_string(marked),
         HoverContents::Array(items) => items
             .iter()
@@ -36,8 +40,7 @@ fn format_hover_contents(contents: &HoverContents) -> String {
             .collect::<Vec<_>>()
             .join("\n\n"),
         HoverContents::Markup(markup) => markup.value.clone(),
-    };
-    clean_hover_text(&raw)
+    }
 }
 
 fn format_marked_string(s: &MarkedString) -> String {
@@ -47,22 +50,10 @@ fn format_marked_string(s: &MarkedString) -> String {
     }
 }
 
-/// Rust keywords/primitives whose long-form docs we want to suppress.
-const KEYWORD_DOCS: &[&str] = &[
-    "struct", "enum", "trait", "impl", "fn", "mod", "use", "pub", "let", "mut", "const", "static",
-    "type", "where", "match", "if", "else", "for", "while", "loop", "return", "async", "await",
-    "move", "ref", "self", "super", "crate", "dyn", "unsafe", "bool", "char", "str", "i8", "i16",
-    "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64",
-];
-
-/// Strip LSP noise from hover text: size/align lines, excessive documentation.
-fn clean_hover_text(text: &str) -> String {
-    // Detect keyword/primitive docs — first non-empty line is just the keyword
-    let first_meaningful = text.lines().find(|l| !l.trim().is_empty());
-    if let Some(first) = first_meaningful {
-        if KEYWORD_DOCS.contains(&first.trim()) {
-            return first.trim().to_string();
-        }
+/// Strip LSP noise from hover text using language-specific rules.
+fn clean_hover_text(language: &str, text: &str) -> String {
+    if let Some(keyword) = language_specific::detect_keyword_doc(language, text) {
+        return keyword.to_string();
     }
 
     let lines: Vec<&str> = text.lines().collect();
@@ -73,8 +64,7 @@ fn clean_hover_text(text: &str) -> String {
         if trimmed.starts_with("```") {
             in_code_block = !in_code_block;
         }
-        // Skip size/align metadata lines from rust-analyzer
-        if trimmed.starts_with("size = ") || trimmed.starts_with("align = ") {
+        if language_specific::is_noise_line(language, line) {
             continue;
         }
         // Outside code blocks, stop at headings after initial content

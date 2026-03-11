@@ -2,8 +2,11 @@ pub mod definition;
 pub mod diagnostics;
 pub mod formatting;
 pub mod hover;
+pub mod language_specific;
 pub mod references;
 pub mod rename;
+pub mod symbol_info;
+pub mod symbol_list;
 pub mod symbol_search;
 
 use std::sync::Arc;
@@ -11,6 +14,7 @@ use std::sync::Arc;
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
 
 /// A single operation within a batch request.
@@ -83,6 +87,9 @@ pub enum Operation {
         /// Language to target a specific LSP server
         language: String,
     },
+    /// Block until a human sends a message via the Unix socket IPC.
+    /// Use this instead of ending the session when you need human input.
+    RequestHumanMessage,
 }
 
 fn default_context_lines() -> usize {
@@ -104,13 +111,15 @@ pub struct OperationResult {
 /// Execute a batch of operations concurrently.
 pub async fn execute_batch(
     manager: &Arc<LspManager>,
+    message_bus: &Arc<HumanMessageBus>,
     operations: Vec<Operation>,
 ) -> Vec<OperationResult> {
     let futures: Vec<_> = operations
         .into_iter()
         .map(|op| {
             let manager = manager.clone();
-            tokio::spawn(async move { execute_one(&manager, op).await })
+            let bus = message_bus.clone();
+            tokio::spawn(async move { execute_one(&manager, &bus, op).await })
         })
         .collect();
 
@@ -129,7 +138,11 @@ pub async fn execute_batch(
     results
 }
 
-async fn execute_one(manager: &LspManager, op: Operation) -> OperationResult {
+async fn execute_one(
+    manager: &LspManager,
+    message_bus: &HumanMessageBus,
+    op: Operation,
+) -> OperationResult {
     match op {
         Operation::Definition {
             symbol_name,
@@ -213,13 +226,19 @@ async fn execute_one(manager: &LspManager, op: Operation) -> OperationResult {
                 let p = params.clone();
                 async move {
                     let result = client.raw_request(&m, p).await?;
-                    Ok(
-                        serde_json::to_string_pretty(&result)
-                            .unwrap_or_else(|_| result.to_string()),
-                    )
+                    Ok(format_compact_json(&strip_json_noise(result)))
                 }
             })
             .await
+        }
+
+        Operation::RequestHumanMessage => {
+            let msg = message_bus.wait_for_message().await;
+            OperationResult {
+                operation: "request_human_message".into(),
+                success: true,
+                output: msg,
+            }
         }
     }
 }
@@ -302,5 +321,46 @@ where
             success: false,
             output: format!("{op_name} failed: {e}"),
         },
+    }
+}
+
+/// Remove null values and empty arrays/objects from JSON to reduce noise.
+fn strip_json_noise(val: serde_json::Value) -> serde_json::Value {
+    match val {
+        serde_json::Value::Object(map) => {
+            let cleaned: serde_json::Map<String, serde_json::Value> = map
+                .into_iter()
+                .filter_map(|(k, v)| {
+                    if v.is_null() {
+                        return None;
+                    }
+                    let v = strip_json_noise(v);
+                    if matches!(&v, serde_json::Value::Array(a) if a.is_empty()) {
+                        return None;
+                    }
+                    if matches!(&v, serde_json::Value::Object(m) if m.is_empty()) {
+                        return None;
+                    }
+                    Some((k, v))
+                })
+                .collect();
+            serde_json::Value::Object(cleaned)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(strip_json_noise).collect())
+        }
+        other => other,
+    }
+}
+
+/// Format JSON compactly: objects/arrays on single lines, one entry per line at top level.
+fn format_compact_json(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .map(|v| serde_json::to_string(v).unwrap_or_else(|_| v.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => serde_json::to_string(val).unwrap_or_else(|_| val.to_string()),
     }
 }

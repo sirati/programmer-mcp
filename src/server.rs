@@ -6,6 +6,7 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 
+use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
 use crate::tools::{self, Operation, OperationResult};
 
@@ -19,14 +20,16 @@ pub struct ExecuteRequest {
 #[derive(Clone)]
 pub struct ProgrammerServer {
     manager: Arc<LspManager>,
+    message_bus: Arc<HumanMessageBus>,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl ProgrammerServer {
-    pub fn new(manager: Arc<LspManager>) -> Self {
+    pub fn new(manager: Arc<LspManager>, message_bus: Arc<HumanMessageBus>) -> Self {
         Self {
             manager,
+            message_bus,
             tool_router: Self::tool_router(),
         }
     }
@@ -35,17 +38,26 @@ impl ProgrammerServer {
         description = "Execute one or more language server operations in parallel. \
         Supported operations: definition (find symbol source), references (find all usages), \
         diagnostics (get file errors/warnings), hover (get type/docs at position), \
-        rename_symbol (rename across project). Each operation can optionally specify a \
-        'language' to target a specific LSP server."
+        rename_symbol (rename across project), raw_lsp_request (raw LSP query), \
+        request_human_message (block until human sends a message). \
+        Each operation can optionally specify a 'language' to target a specific LSP server."
     )]
     async fn execute(
         &self,
         Parameters(request): Parameters<ExecuteRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let results = tools::execute_batch(&self.manager, request.operations).await;
+        let results =
+            tools::execute_batch(&self.manager, &self.message_bus, request.operations).await;
 
-        let output = format_results(&results);
+        let mut output = format_results(&results);
         let any_error = results.iter().any(|r| !r.success);
+
+        // Append any pending human messages
+        let pending = self.message_bus.take_pending().await;
+        if !pending.is_empty() {
+            output.push_str("\n\n--- Human Message ---\n");
+            output.push_str(&pending.join("\n"));
+        }
 
         if any_error {
             Ok(CallToolResult::error(vec![Content::text(output)]))

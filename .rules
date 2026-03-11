@@ -24,3 +24,5 @@ Unless explicitly asked never create commits. You can stage files, so nix sees t
 when building always set the timeout to >1h as building can take a very very long time. because of this always do all other checks to avoid building, and only build if asked to
 
 whenever possible common shared code should be placed at the appropirate location for shared code. Boilerplate should be avoided by having sane default.
+
+when using debug-mcp never stop the session while there are still improvements to be made. Instead impl changes are discovered by dogfeeding.
