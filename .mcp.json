@@ -153,6 +153,10 @@
                 "MemorySwapMax=2G",
                 "mcp-nixos"
             ]
+        },
+        "debug-mcp": {
+            "command": "./debug-mcp/programmer-mcp",
+            "args": ["--workspace", "./", "--debug"]
         }
     }
 }

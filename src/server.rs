@@ -48,11 +48,7 @@ impl ProgrammerServer {
         let any_error = results.iter().any(|r| !r.success);
 
         if any_error {
-            Ok(CallToolResult {
-                content: vec![Content::text(output)],
-                is_error: Some(true),
-                ..Default::default()
-            })
+            Ok(CallToolResult::error(vec![Content::text(output)]))
         } else {
             Ok(CallToolResult::success(vec![Content::text(output)]))
         }
@@ -70,8 +66,7 @@ impl ServerHandler for ProgrammerServer {
             .with_instructions(
                 "Multi-language LSP server. Use the 'execute' tool with an array of operations \
                  to query definitions, references, diagnostics, hover info, or rename symbols. \
-                 Operations run in parallel. Specify 'language' to target a specific LSP."
-                    .into(),
+                 Operations run in parallel. Specify 'language' to target a specific LSP.",
             )
     }
 }
@@ -81,19 +76,32 @@ fn format_results(results: &[OperationResult]) -> String {
         return results[0].output.clone();
     }
 
-    results
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let status = if r.success { "OK" } else { "ERROR" };
-            format!(
-                "=== Operation {} ({}) [{}] ===\n{}",
-                i + 1,
-                r.operation,
-                status,
-                r.output
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    let mut sections = Vec::new();
+    let mut empty_count = 0;
+    let mut error_count = 0;
+
+    for r in results {
+        if !r.success {
+            error_count += 1;
+            sections.push(format!("{} failed: {}", r.operation, r.output));
+        } else if r.output.is_empty() || r.output.ends_with("not found") {
+            empty_count += 1;
+        } else {
+            sections.push(r.output.clone());
+        }
+    }
+
+    if empty_count > 0 && !sections.is_empty() {
+        sections.push("Some requests found nothing".to_string());
+    }
+
+    if sections.is_empty() {
+        if error_count > 0 {
+            "All operations failed".to_string()
+        } else {
+            "No results found".to_string()
+        }
+    } else {
+        sections.join("\n\n---\n\n")
+    }
 }

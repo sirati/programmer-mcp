@@ -467,6 +467,16 @@ impl LspClient {
         Ok(())
     }
 
+    /// Send an arbitrary LSP request and return the raw JSON response.
+    pub async fn raw_request(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, LspClientError> {
+        let result: serde_json::Value = self.rpc.request(method, RpcParams(params)).await?;
+        Ok(result)
+    }
+
     pub fn language(&self) -> &str {
         &self.language
     }

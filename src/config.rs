@@ -33,6 +33,15 @@ impl std::str::FromStr for LspSpec {
     }
 }
 
+impl LspSpec {
+    /// Reconstruct the CLI argument string (e.g. `"rust:rust-analyzer --stdio"`).
+    pub fn to_spec_string(&self) -> String {
+        let mut parts = vec![self.command.clone()];
+        parts.extend(self.args.iter().cloned());
+        format!("{}:{}", self.language, parts.join(" "))
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "programmer-mcp", about = "Multi-LSP MCP server")]
 pub struct Config {
@@ -41,8 +50,14 @@ pub struct Config {
     pub workspace: PathBuf,
 
     /// LSP servers to connect to (format: language:command [args])
-    #[arg(long = "lsp", required = true)]
+    /// Not required when --debug is active.
+    #[arg(long = "lsp")]
     pub lsp_specs: Vec<LspSpec>,
+
+    /// Run in debug/meta mode: exposes rebuild, grab-log, and relay-command tools
+    /// instead of the normal LSP tools.
+    #[arg(long, default_value_t = false)]
+    pub debug: bool,
 }
 
 impl Config {
@@ -61,6 +76,10 @@ impl Config {
                 "workspace '{}' is not a directory",
                 config.workspace.display()
             );
+        }
+
+        if !config.debug && config.lsp_specs.is_empty() {
+            anyhow::bail!("at least one --lsp spec is required in normal (non-debug) mode");
         }
 
         Ok(config)

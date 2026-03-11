@@ -74,6 +74,15 @@ pub enum Operation {
         /// Optional language to target a specific LSP
         language: Option<String>,
     },
+    /// Send a raw LSP request and return the JSON response (for debugging/development)
+    RawLspRequest {
+        /// The LSP method (e.g. "textDocument/completion", "textDocument/signatureHelp")
+        method: String,
+        /// The JSON params for the request
+        params: serde_json::Value,
+        /// Language to target a specific LSP server
+        language: String,
+    },
 }
 
 fn default_context_lines() -> usize {
@@ -189,6 +198,26 @@ async fn execute_one(manager: &LspManager, op: Operation) -> OperationResult {
                 let path = file_path.clone();
                 let name = new_name.clone();
                 async move { rename::rename_symbol(&client, &path, line, column, &name).await }
+            })
+            .await
+        }
+
+        Operation::RawLspRequest {
+            method,
+            params,
+            language,
+        } => {
+            let clients = manager.resolve(Some(&language), None);
+            execute_on_first("raw_lsp_request", clients, |client| {
+                let m = method.clone();
+                let p = params.clone();
+                async move {
+                    let result = client.raw_request(&m, p).await?;
+                    Ok(
+                        serde_json::to_string_pretty(&result)
+                            .unwrap_or_else(|_| result.to_string()),
+                    )
+                }
             })
             .await
         }
