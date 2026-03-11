@@ -44,3 +44,5 @@ result-*
 
 # IPC socket
 .programmer-mcp.sock
+
+/.claude

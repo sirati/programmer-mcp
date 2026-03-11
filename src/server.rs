@@ -6,6 +6,7 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 
+use crate::background::BackgroundManager;
 use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
 use crate::tools::{self, Operation, OperationResult};
@@ -21,36 +22,68 @@ pub struct ExecuteRequest {
 pub struct ProgrammerServer {
     manager: Arc<LspManager>,
     message_bus: Arc<HumanMessageBus>,
+    background: Arc<BackgroundManager>,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl ProgrammerServer {
-    pub fn new(manager: Arc<LspManager>, message_bus: Arc<HumanMessageBus>) -> Self {
+    pub fn new(
+        manager: Arc<LspManager>,
+        message_bus: Arc<HumanMessageBus>,
+        background: Arc<BackgroundManager>,
+    ) -> Self {
         Self {
             manager,
             message_bus,
+            background,
             tool_router: Self::tool_router(),
         }
     }
 
     #[tool(
         description = "Execute one or more language server operations in parallel. \
-        Supported operations: definition (find symbol source), references (find all usages), \
-        diagnostics (get file errors/warnings), hover (get type/docs at position), \
-        rename_symbol (rename across project), raw_lsp_request (raw LSP query), \
-        request_human_message (block until human sends a message). \
-        Each operation can optionally specify a 'language' to target a specific LSP server."
+        ALWAYS batch multiple operations into a single call — do not make separate calls \
+        for each symbol or file.\n\
+        Supported operations:\n\
+        - definition: get symbol source (symbolNames: string or array)\n\
+        - references: find all usages (symbolNames: string or array)\n\
+        - list_symbols: tree of symbols in a file (filePath, maxDepth)\n\
+        - docstring: get doc comments (symbolNames: string or array)\n\
+        - body: get symbol source body (symbolNames: string or array)\n\
+        - impls: find all impl blocks for a type (symbolNames: string or array)\n\
+        - diagnostics: get file errors/warnings (filePath)\n\
+        - hover: get type/docs at position (filePath, line, column)\n\
+        - rename_symbol: rename across project (filePath, line, column, newName)\n\
+        - raw_lsp_request: raw LSP query (method, params, language)\n\
+        - request_human_message: block until human sends a message\n\
+        - start_process: start a named background process (name, command, args, group)\n\
+        - stop_process: stop a background process by name\n\
+        - search_process_output: grep background process output (name/group, pattern)\n\
+        - define_trigger: define a trigger on process output (name, pattern, linesBefore, linesAfter, timeoutMs, group)\n\
+        - await_trigger: wait for a trigger to fire (name)\n\
+        Each operation can optionally specify 'language' to target a specific LSP."
     )]
     async fn execute(
         &self,
         Parameters(request): Parameters<ExecuteRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let results =
-            tools::execute_batch(&self.manager, &self.message_bus, request.operations).await;
+        let results = tools::execute_batch(
+            &self.manager,
+            &self.message_bus,
+            &self.background,
+            request.operations,
+        )
+        .await;
 
         let mut output = format_results(&results);
         let any_error = results.iter().any(|r| !r.success);
+
+        // Append any pending trigger results
+        let pending_triggers = self.background.triggers.lock().await.take_pending();
+        for tr in &pending_triggers {
+            output.push_str(&format!("\n\n{tr}"));
+        }
 
         // Append any pending human messages
         let pending = self.message_bus.take_pending().await;

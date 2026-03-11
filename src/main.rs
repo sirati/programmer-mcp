@@ -1,3 +1,4 @@
+mod background;
 mod config;
 mod debug;
 mod ipc;
@@ -11,6 +12,7 @@ use std::sync::Arc;
 use rmcp::{transport::stdio, ServiceExt};
 use tracing_subscriber::EnvFilter;
 
+use background::BackgroundManager;
 use config::Config;
 use debug::server::DebugServer;
 use lsp::manager::LspManager;
@@ -79,6 +81,7 @@ async fn run_normal_server(config: Config) -> anyhow::Result<()> {
 
     let manager = Arc::new(LspManager::start(&config.lsp_specs, &config.workspace).await?);
     let message_bus = ipc::HumanMessageBus::start(&config.workspace);
+    let background = BackgroundManager::new(&config.workspace);
 
     let watcher_manager = manager.clone();
     let workspace = config.workspace.clone();
@@ -88,7 +91,7 @@ async fn run_normal_server(config: Config) -> anyhow::Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let mcp_server = ProgrammerServer::new(manager.clone(), message_bus);
+    let mcp_server = ProgrammerServer::new(manager.clone(), message_bus, background);
     let service = mcp_server.serve(stdio()).await.inspect_err(|e| {
         tracing::error!("MCP serve error: {e:?}");
     })?;

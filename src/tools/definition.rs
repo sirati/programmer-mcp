@@ -1,10 +1,11 @@
 use std::fmt::Write;
 use std::sync::Arc;
 
-use lsp_types::{DocumentSymbolResponse, Position, Range, Uri};
 use tracing::debug;
 
-use super::formatting::{add_line_numbers, read_range_from_file, uri_to_path};
+use super::formatting::{
+    add_line_numbers, find_containing_symbol_range, read_range_from_file, uri_to_path,
+};
 use super::symbol_search::find_symbol_with_fallback;
 use crate::lsp::client::{LspClient, LspClientError};
 
@@ -73,43 +74,4 @@ pub async fn read_definition(
     }
 
     Ok(output)
-}
-
-/// Find the full range of the symbol containing `position` via documentSymbol.
-async fn find_containing_symbol_range(
-    client: &Arc<LspClient>,
-    uri: &Uri,
-    position: Position,
-) -> Option<Range> {
-    let doc_symbols = client.document_symbol(uri).await.ok()?;
-
-    match doc_symbols {
-        DocumentSymbolResponse::Flat(symbols) => symbols
-            .iter()
-            .find(|s| contains_position(&s.location.range, position))
-            .map(|s| s.location.range),
-        DocumentSymbolResponse::Nested(symbols) => find_in_nested(&symbols, position),
-    }
-}
-
-fn find_in_nested(symbols: &[lsp_types::DocumentSymbol], position: Position) -> Option<Range> {
-    for sym in symbols {
-        if contains_position(&sym.range, position) {
-            // Check children for more specific match
-            if let Some(children) = &sym.children {
-                if let Some(child_range) = find_in_nested(children, position) {
-                    return Some(child_range);
-                }
-            }
-            return Some(sym.range);
-        }
-    }
-    None
-}
-
-fn contains_position(range: &Range, pos: Position) -> bool {
-    (range.start.line < pos.line
-        || (range.start.line == pos.line && range.start.character <= pos.character))
-        && (range.end.line > pos.line
-            || (range.end.line == pos.line && range.end.character >= pos.character))
 }

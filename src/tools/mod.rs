@@ -2,6 +2,7 @@ pub mod definition;
 pub mod diagnostics;
 pub mod formatting;
 pub mod hover;
+pub mod impls;
 pub mod language_specific;
 pub mod references;
 pub mod rename;
@@ -18,22 +19,25 @@ use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
 
 /// A single operation within a batch request.
+///
+/// Symbol-based operations accept `symbolNames` (array of names) to process multiple
+/// symbols in one operation. Results are combined.
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum Operation {
-    /// Get symbol definition source code
+    /// Get symbol definition source code. Accepts multiple symbol names.
     Definition {
-        /// The symbol name to look up (e.g. 'MyType', 'MyType.method')
-        #[serde(rename = "symbolName")]
-        symbol_name: String,
+        /// Symbol names to look up (e.g. ['MyType', 'MyType.method'])
+        #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
+        symbol_names: Vec<String>,
         /// Optional language to target a specific LSP
         language: Option<String>,
     },
-    /// Find all references to a symbol
+    /// Find all references to symbols. Accepts multiple symbol names.
     References {
-        /// The symbol name to search for
-        #[serde(rename = "symbolName")]
-        symbol_name: String,
+        /// Symbol names to search for
+        #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
+        symbol_names: Vec<String>,
         /// Optional language to target a specific LSP
         language: Option<String>,
     },
@@ -78,6 +82,41 @@ pub enum Operation {
         /// Optional language to target a specific LSP
         language: Option<String>,
     },
+    /// List symbols in a file as a tree (like ls for code structure)
+    ListSymbols {
+        /// Path to the file
+        #[serde(rename = "filePath")]
+        file_path: String,
+        /// Max depth of symbol tree (default 3)
+        #[serde(rename = "maxDepth", default = "default_max_depth")]
+        max_depth: usize,
+        /// Optional language to target a specific LSP
+        language: Option<String>,
+    },
+    /// Get the doc comment/docstring of symbols. Accepts multiple symbol names.
+    Docstring {
+        /// Symbol names to get docstrings for
+        #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
+        symbol_names: Vec<String>,
+        /// Optional language to target a specific LSP
+        language: Option<String>,
+    },
+    /// Get the source body of symbols. Accepts multiple symbol names.
+    Body {
+        /// Symbol names to get bodies for
+        #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
+        symbol_names: Vec<String>,
+        /// Optional language to target a specific LSP
+        language: Option<String>,
+    },
+    /// Find all impl blocks for a type (Rust-specific: lists `impl Type` and `impl Trait for Type`)
+    Impls {
+        /// Type name to find implementations for
+        #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
+        symbol_names: Vec<String>,
+        /// Optional language to target a specific LSP
+        language: Option<String>,
+    },
     /// Send a raw LSP request and return the JSON response (for debugging/development)
     RawLspRequest {
         /// The LSP method (e.g. "textDocument/completion", "textDocument/signatureHelp")
@@ -90,6 +129,46 @@ pub enum Operation {
     /// Block until a human sends a message via the Unix socket IPC.
     /// Use this instead of ending the session when you need human input.
     RequestHumanMessage,
+}
+
+fn default_max_depth() -> usize {
+    3
+}
+
+/// Deserialize either a single string or a vec of strings into Vec<String>.
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct StringOrVec;
+
+    impl<'de> de::Visitor<'de> for StringOrVec {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string or array of strings")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(vec![v.to_string()])
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(vec![v])
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut vec = Vec::new();
+            while let Some(s) = seq.next_element()? {
+                vec.push(s);
+            }
+            Ok(vec)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrVec)
 }
 
 fn default_context_lines() -> usize {
@@ -145,26 +224,30 @@ async fn execute_one(
 ) -> OperationResult {
     match op {
         Operation::Definition {
-            symbol_name,
+            symbol_names,
             language,
         } => {
             let clients = manager.resolve(language.as_deref(), None);
-            execute_on_clients("definition", clients, |client| {
-                let name = symbol_name.clone();
-                async move { definition::read_definition(&client, &name).await }
-            })
+            execute_multi_symbol(
+                "definition",
+                clients,
+                &symbol_names,
+                |client, name| async move { definition::read_definition(&client, &name).await },
+            )
             .await
         }
 
         Operation::References {
-            symbol_name,
+            symbol_names,
             language,
         } => {
             let clients = manager.resolve(language.as_deref(), None);
-            execute_on_clients("references", clients, |client| {
-                let name = symbol_name.clone();
-                async move { references::find_references(&client, &name, 5).await }
-            })
+            execute_multi_symbol(
+                "references",
+                clients,
+                &symbol_names,
+                |client, name| async move { references::find_references(&client, &name, 5).await },
+            )
             .await
         }
 
@@ -211,6 +294,55 @@ async fn execute_one(
                 let path = file_path.clone();
                 let name = new_name.clone();
                 async move { rename::rename_symbol(&client, &path, line, column, &name).await }
+            })
+            .await
+        }
+
+        Operation::ListSymbols {
+            file_path,
+            max_depth,
+            language,
+        } => {
+            let clients = manager.resolve(language.as_deref(), Some(&file_path));
+            execute_on_first("list_symbols", clients, |client| {
+                let path = file_path.clone();
+                async move { symbol_list::list_symbols(&client, &path, max_depth).await }
+            })
+            .await
+        }
+
+        Operation::Docstring {
+            symbol_names,
+            language,
+        } => {
+            let clients = manager.resolve(language.as_deref(), None);
+            execute_multi_symbol(
+                "docstring",
+                clients,
+                &symbol_names,
+                |client, name| async move { symbol_info::get_docstring(&client, &name).await },
+            )
+            .await
+        }
+
+        Operation::Body {
+            symbol_names,
+            language,
+        } => {
+            let clients = manager.resolve(language.as_deref(), None);
+            execute_multi_symbol("body", clients, &symbol_names, |client, name| async move {
+                symbol_info::get_body(&client, &name).await
+            })
+            .await
+        }
+
+        Operation::Impls {
+            symbol_names,
+            language,
+        } => {
+            let clients = manager.resolve(language.as_deref(), None);
+            execute_multi_symbol("impls", clients, &symbol_names, |client, name| async move {
+                impls::find_impls(&client, &name).await
             })
             .await
         }
@@ -320,6 +452,60 @@ where
             operation: op_name.into(),
             success: false,
             output: format!("{op_name} failed: {e}"),
+        },
+    }
+}
+
+/// Execute a symbol-based operation for multiple symbol names across all matching clients.
+async fn execute_multi_symbol<F, Fut>(
+    op_name: &str,
+    clients: Vec<&Arc<crate::lsp::client::LspClient>>,
+    names: &[String],
+    f: F,
+) -> OperationResult
+where
+    F: Fn(Arc<crate::lsp::client::LspClient>, String) -> Fut,
+    Fut: std::future::Future<Output = Result<String, crate::lsp::client::LspClientError>>,
+{
+    if clients.is_empty() {
+        return OperationResult {
+            operation: op_name.into(),
+            success: false,
+            output: "no LSP client available for this operation".into(),
+        };
+    }
+
+    let mut futures = Vec::new();
+    for name in names {
+        for client in &clients {
+            futures.push(f((*client).clone(), name.clone()));
+        }
+    }
+
+    let results = futures::future::join_all(futures).await;
+
+    let mut parts = Vec::new();
+    let mut any_success = false;
+    for result in results {
+        match result {
+            Ok(text) if !text.is_empty() => {
+                any_success = true;
+                parts.push(text);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(op = op_name, "client error: {e}");
+            }
+        }
+    }
+
+    OperationResult {
+        operation: op_name.into(),
+        success: any_success,
+        output: if parts.is_empty() {
+            format!("no results for {op_name}")
+        } else {
+            parts.join("\n\n---\n\n")
         },
     }
 }
