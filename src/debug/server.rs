@@ -1,3 +1,8 @@
+//! Debug-mode MCP server.
+//!
+//! Manages a child `programmer-mcp` process (build, restart, log access)
+//! and exposes `show_help` + `execute` relay tools that forward to the child.
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -15,8 +20,10 @@ use tokio::sync::Mutex;
 use super::build::run_cargo_build;
 use super::child::ChildHandle;
 use super::config::ConfigState;
+use super::format::{format_show_config, format_status, unwrap_jsonrpc_response};
 use super::proxy;
 use super::relay::build_jsonrpc_request;
+use super::spawn::replace_child;
 use super::update::run_update_debug_bin;
 
 // ── request types ─────────────────────────────────────────────────────────────
@@ -30,19 +37,19 @@ pub struct GrabLogRequest {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct RelayCommandRequest {
-    /// MCP method to call (e.g. "tools/list", "tools/call")
-    pub method: String,
-    /// Method parameters as a JSON object
-    pub params: serde_json::Value,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConfigureRequest {
     /// Add an LSP spec ("language:command [args]"), e.g. "rust:rust-analyzer --stdio"
     pub add_lsp: Option<String>,
     /// Remove all LSP specs for this language name
     pub remove_lsp: Option<String>,
+}
+
+/// Request for the `execute` relay tool.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExecuteRequest {
+    /// DSL command script — forwarded verbatim to the child's `execute` tool.
+    /// See the child's `execute` tool description (via `show_help`) for full syntax.
+    pub commands: String,
 }
 
 // ── server struct ─────────────────────────────────────────────────────────────
@@ -56,7 +63,7 @@ pub struct DebugServer {
     config_state: Arc<Mutex<ConfigState>>,
     /// The normal (non-debug) child process managed by this server.
     child: Arc<Mutex<Option<ChildHandle>>>,
-    /// The new debug child process (populated after update_debug_bin succeeds).
+    /// The debug child process (populated after update_debug_bin succeeds).
     debug_child: Arc<Mutex<Option<ChildHandle>>>,
     proxy_mode: Arc<AtomicBool>,
     next_id: Arc<AtomicU64>,
@@ -92,28 +99,10 @@ impl DebugServer {
         waits for it to be ready, stops the old instance, and reports the result."
     )]
     async fn rebuild(&self) -> Result<CallToolResult, McpError> {
-        let args = self.current_child_args().await;
-        if args.iter().filter(|a| a.as_str() == "--lsp").count() == 0 {
-            return Ok(CallToolResult::error(vec![Content::text(
-                "No LSP servers configured. Use `configure` with `add_lsp` to add at least \
-                 one LSP spec (e.g. \"rust:rust-analyzer\") before rebuilding.",
-            )]));
-        }
-
-        let outcome = run_cargo_build(&self.project_root).await;
-        if !outcome.success() {
-            return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Build failed:\n{}",
-                outcome.errors
-            ))]));
-        }
-        let binary_src = outcome.binary_path.unwrap();
-        match replace_child(&self.child, &binary_src, &args, &self.project_root).await {
-            Ok(msg) => Ok(CallToolResult::success(vec![Content::text(msg)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "Build succeeded but restart failed: {e}"
-            ))])),
-        }
+        Ok(match self.run_rebuild().await {
+            Ok(msg) => CallToolResult::success(vec![Content::text(msg)]),
+            Err(msg) => CallToolResult::error(vec![Content::text(msg)]),
+        })
     }
 
     #[tool(
@@ -132,13 +121,11 @@ impl DebugServer {
             &self.proxy_mode,
         )
         .await;
-        if outcome.success {
-            Ok(CallToolResult::success(vec![Content::text(
-                outcome.message,
-            )]))
+        Ok(if outcome.success {
+            CallToolResult::success(vec![Content::text(outcome.message)])
         } else {
-            Ok(CallToolResult::error(vec![Content::text(outcome.message)]))
-        }
+            CallToolResult::error(vec![Content::text(outcome.message)])
+        })
     }
 
     #[tool(
@@ -146,35 +133,15 @@ impl DebugServer {
         how long it has been up, and any configuration load errors."
     )]
     async fn status(&self) -> Result<CallToolResult, McpError> {
-        let cfg = self.config_state.lock().await;
+        let cfg_guard = self.config_state.lock().await;
         let child_guard = self.child.lock().await;
-        let is_proxying = self.proxy_mode.load(Ordering::Relaxed);
-
-        let process_status = match child_guard.as_ref() {
-            None => "No child process has been started yet. Use `rebuild` to build and launch it."
-                .to_string(),
-            Some(c) if c.is_alive().await => {
-                let secs = c.started_at.elapsed().as_secs();
-                format!(
-                    "Child process is running (up {}m {}s).",
-                    secs / 60,
-                    secs % 60
-                )
-            }
-            Some(_) => "Child process was started but has since exited.".to_string(),
-        };
-
-        let mut lines = vec![process_status];
-        if is_proxying {
-            lines.push("Proxy mode active — traffic is forwarded to the debug child.".to_string());
-        }
-        if let Some(err) = &cfg.load_error {
-            lines.push(format!("⚠ Config load error: {err}"));
-        }
-
-        Ok(CallToolResult::success(vec![Content::text(
-            lines.join("\n"),
-        )]))
+        let text = format_status(
+            &*cfg_guard,
+            &*child_guard,
+            self.proxy_mode.load(Ordering::Relaxed),
+        )
+        .await;
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     #[tool(description = "Add or remove LSP servers in the saved debug config \
@@ -185,7 +152,6 @@ impl DebugServer {
     ) -> Result<CallToolResult, McpError> {
         let mut cfg = self.config_state.lock().await;
         let mut messages: Vec<String> = Vec::new();
-
         if let Some(spec) = req.add_lsp {
             match cfg.add_lsp(spec.clone()) {
                 Ok(()) => messages.push(format!("Added LSP: {spec}")),
@@ -202,7 +168,6 @@ impl DebugServer {
             messages
                 .push("No action specified. Provide `add_lsp` and/or `remove_lsp`.".to_string());
         }
-
         Ok(CallToolResult::success(vec![Content::text(
             messages.join("\n"),
         )]))
@@ -213,34 +178,9 @@ impl DebugServer {
         saved LSP specs from debug-mcp.config.toml, and any config load error."
     )]
     async fn show_config(&self) -> Result<CallToolResult, McpError> {
-        let cfg = self.config_state.lock().await;
-        let mut lines = vec![format!("Config file: {}", cfg.path.display())];
-
-        if let Some(err) = &cfg.load_error {
-            lines.push(format!("⚠ Load error: {err}"));
-        }
-        lines.push(String::new());
-        lines.push("Command-line LSPs:".to_string());
-        if self.cli_lsp_specs.is_empty() {
-            lines.push("  (none)".to_string());
-        } else {
-            for s in &self.cli_lsp_specs {
-                lines.push(format!("  {s}"));
-            }
-        }
-        lines.push(String::new());
-        lines.push("Saved LSPs (debug-mcp.config.toml):".to_string());
-        if cfg.config.lsp.is_empty() {
-            lines.push("  (none)".to_string());
-        } else {
-            for s in &cfg.config.lsp {
-                lines.push(format!("  {s}"));
-            }
-        }
-
-        Ok(CallToolResult::success(vec![Content::text(
-            lines.join("\n"),
-        )]))
+        let cfg_guard = self.config_state.lock().await;
+        let text = format_show_config(&self.cli_lsp_specs, &*cfg_guard);
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     #[tool(
@@ -269,85 +209,44 @@ impl DebugServer {
     }
 
     #[tool(
-        description = "Relay an MCP JSON-RPC call to the running child process and return \
-        its response. Provide the `method` (e.g. \"tools/call\") and optional `params`."
+        description = "List all tools available in the running child process. \
+        Use this to discover the child's DSL syntax and available commands \
+        before calling `execute`."
     )]
-    async fn relay_command(
+    async fn show_help(&self) -> Result<CallToolResult, McpError> {
+        self.relay_to_child("tools/list", serde_json::json!({}))
+            .await
+    }
+
+    #[tool(
+        description = "Execute DSL commands on the child programmer-mcp process.\n\
+        The `commands` string is forwarded verbatim — call `show_help` first to \
+        see the full DSL syntax supported by the child.\n\n\
+        Quick reference:\n\
+          cd src/debug            # directory context\n\
+          cd src/debug/server.rs  # file context (extension required)\n\
+          list_symbols [f1 f2]    # or bare: list_symbols\n\
+          body       [sym1 sym2]\n\
+          definition [sym1 sym2]\n\
+          references [sym1]\n\
+          diagnostics [file.rs]\n\
+          list_tasks / set_task name desc / complete_task name\n\
+          start_process name cmd [args] [group=g]\n\
+        Brace expansion: tools/{mod.rs x.rs} → tools/mod.rs tools/x.rs"
+    )]
+    async fn execute(
         &self,
-        Parameters(req): Parameters<RelayCommandRequest>,
+        Parameters(req): Parameters<ExecuteRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let request_json = build_jsonrpc_request(id, &req.method, req.params);
-
-        let guard = self.child.lock().await;
-        let Some(child) = guard.as_ref() else {
-            return Ok(CallToolResult::error(vec![Content::text(
-                "No child process is running. Use `rebuild` first.",
-            )]));
-        };
-        match child.relay(&request_json).await {
-            Ok(resp) => Ok(unwrap_jsonrpc_response(&req.method, &resp)),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "Relay failed: {e}"
-            ))])),
-        }
+        self.relay_to_child(
+            "tools/call",
+            serde_json::json!({
+                "name": "execute",
+                "arguments": { "commands": req.commands }
+            }),
+        )
+        .await
     }
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-fn unwrap_jsonrpc_response(method: &str, raw: &str) -> CallToolResult {
-    let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return CallToolResult::success(vec![Content::text(raw)]);
-    };
-    if let Some(err) = val.get("error") {
-        let msg = err
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("Unknown error");
-        let code = err.get("code").and_then(|c| c.as_i64());
-        let text = match code {
-            Some(c) => format!("Error {c}: {msg}"),
-            None => msg.to_string(),
-        };
-        return CallToolResult::error(vec![Content::text(text)]);
-    }
-    let Some(result) = val.get("result") else {
-        return CallToolResult::success(vec![Content::text(raw)]);
-    };
-    // tools/call results are already CallToolResult-shaped — pass through transparently
-    if method == "tools/call" {
-        if let Ok(ctr) = serde_json::from_value::<CallToolResult>(result.clone()) {
-            return ctr;
-        }
-    }
-    // For other methods, extract the meaningful content
-    let text = format_mcp_result(method, result);
-    CallToolResult::success(vec![Content::text(text)])
-}
-
-fn format_mcp_result(method: &str, result: &serde_json::Value) -> String {
-    match method {
-        "tools/list" => format_tools_list(result),
-        _ => serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string()),
-    }
-}
-
-fn format_tools_list(result: &serde_json::Value) -> String {
-    let Some(tools) = result.get("tools").and_then(|t| t.as_array()) else {
-        return "(no tools)".to_string();
-    };
-    tools
-        .iter()
-        .filter_map(|t| {
-            let name = t.get("name")?.as_str()?;
-            let desc = t.get("description").and_then(|d| d.as_str()).unwrap_or("");
-            // Truncate description to first line
-            let short = desc.lines().next().unwrap_or("");
-            Some(format!("- {name}: {short}"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 // ── ServerHandler: manual impl for proxy interception ─────────────────────────
@@ -360,10 +259,11 @@ impl ServerHandler for DebugServer {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-                "Debug control server for programmer-mcp. Commands: `rebuild`, \
-                 `update_debug_bin`, `status`, `configure`, `show_config`, `grab_log`, \
-                 `relay_command`. After `update_debug_bin` succeeds, all tool calls except \
-                 `update_debug_bin` are transparently forwarded to the new debug process.",
+                "Debug control server for programmer-mcp.\n\
+                 Commands: `rebuild`, `update_debug_bin`, `status`, `configure`, \
+                 `show_config`, `grab_log`, `show_help`, `execute`.\n\
+                 Use `show_help` to inspect the child's tool list, then use `execute` \
+                 with DSL commands to interact with the running child.",
             )
     }
 
@@ -406,7 +306,32 @@ impl ServerHandler for DebugServer {
     }
 }
 
+// ── private helpers ───────────────────────────────────────────────────────────
+
 impl DebugServer {
+    /// Core build-and-restart logic shared by the `rebuild` tool and auto-startup.
+    ///
+    /// Returns `Ok(status_message)` on success, `Err(error_message)` on failure.
+    /// Returns `Ok` with a skip message if no LSP servers are configured.
+    pub async fn run_rebuild(&self) -> Result<String, String> {
+        let args = self.current_child_args().await;
+        if args.iter().filter(|a| a.as_str() == "--lsp").count() == 0 {
+            return Err(
+                "No LSP servers configured. Use `configure` with `add_lsp` to add at least \
+                 one LSP spec (e.g. \"rust:rust-analyzer\") before rebuilding."
+                    .to_string(),
+            );
+        }
+        let outcome = run_cargo_build(&self.project_root).await;
+        if !outcome.success() {
+            return Err(format!("Build failed:\n{}", outcome.errors));
+        }
+        let binary_src = outcome.binary_path.unwrap();
+        replace_child(&self.child, &binary_src, &args, &self.project_root)
+            .await
+            .map_err(|e| format!("Build succeeded but restart failed: {e}"))
+    }
+
     async fn current_child_args(&self) -> Vec<String> {
         let cfg = self.config_state.lock().await;
         let mut args = vec![
@@ -423,68 +348,27 @@ impl DebugServer {
         }
         args
     }
-}
 
-async fn replace_child(
-    child_mutex: &Mutex<Option<ChildHandle>>,
-    binary_src: &std::path::Path,
-    args: &[String],
-    workspace: &std::path::Path,
-) -> anyhow::Result<String> {
-    let tmp_binary = copy_to_tmp(binary_src)?;
-    let new_child = ChildHandle::spawn(&tmp_binary, args, workspace).await?;
-    if let Err(exit_info) = new_child.wait_for_ready().await {
-        let logs = new_child.search_logs(None, 30).await;
-        new_child.kill().await;
-        let log_snippet = if logs.is_empty() {
-            "(no stderr output captured)".to_string()
-        } else {
-            logs.join("\n")
+    /// Send a JSON-RPC request to the child and return a `CallToolResult`.
+    async fn relay_to_child(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request_json = build_jsonrpc_request(id, method, params);
+
+        let guard = self.child.lock().await;
+        let Some(child) = guard.as_ref() else {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "No child process is running. Use `rebuild` first.",
+            )]));
         };
-        anyhow::bail!(
-            "new child {} before becoming ready.\n\
-             workspace: {}\n\
-             args: {}\n\
-             --- child stderr ---\n{log_snippet}",
-            exit_info.describe(),
-            workspace.display(),
-            args.join(" "),
-        );
+        match child.relay(&request_json).await {
+            Ok(resp) => Ok(unwrap_jsonrpc_response(method, &resp)),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Relay failed: {e}"
+            ))])),
+        }
     }
-    let mut guard = child_mutex.lock().await;
-    let had_previous = guard.is_some();
-    if let Some(old) = guard.take() {
-        old.kill().await;
-    }
-    *guard = Some(new_child);
-    Ok(if had_previous {
-        "Rebuilt and restarted.".to_string()
-    } else {
-        "Built and started.".to_string()
-    })
-}
-
-fn copy_to_tmp(src: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let tmp_dir = std::env::temp_dir().join(format!("programmer-mcp-debug-{ts}"));
-    std::fs::create_dir_all(&tmp_dir)?;
-
-    let name = src
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("binary has no filename"))?;
-    let dest = tmp_dir.join(name);
-    std::fs::copy(src, &dest)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&dest)?.permissions();
-        perms.set_mode(perms.mode() | 0o111);
-        std::fs::set_permissions(&dest, perms)?;
-    }
-
-    Ok(dest)
 }

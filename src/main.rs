@@ -120,6 +120,15 @@ async fn run_debug_server(config: Config) -> anyhow::Result<()> {
         original_args,
     );
 
+    // Auto-rebuild on startup so the child is ready without a manual `rebuild` call.
+    let rebuild_server = server.clone();
+    tokio::spawn(async move {
+        match rebuild_server.run_rebuild().await {
+            Ok(msg) => tracing::info!("auto-rebuild: {msg}"),
+            Err(e) => tracing::warn!("auto-rebuild skipped or failed: {e}"),
+        }
+    });
+
     // Start remote listener for debug server too
     let remote_listener = remote::RemoteListener::new(config.socket_path());
     remote_listener.start(server.clone());

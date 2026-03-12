@@ -50,6 +50,7 @@ result is a snapshot at the time that operation ran.
 "write" vs "read" so the AI knows not to mix them in the same batch expecting
 ordered results. Alternatively, consider a `then` sequencing primitive, but
 that adds complexity.
+instead: for commands that have an obvious ordering like list_tasks, and set_task the then is implied when the order of the commands issued is correct, if the order is unexpected issue a warning 
 
 ---
 

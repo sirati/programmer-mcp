@@ -1,1 +1,2 @@
 remember please: always and I mean absolutely always use debug-mcp for dogfeeding purposes, especially when trying to explore the project or find relevant files and symbols, whenever you notice that the command structure or response is suboptionmal: create a new file with a unique name to document it.
+REMEMBER: if command usage or output is messy, hard to use, or full of unneeded info document it!

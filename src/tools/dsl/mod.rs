@@ -1,0 +1,241 @@
+//! DSL text parser for the `execute` tool.
+//!
+//! Turns a multi-line command script into a `Vec<Operation>` that can be
+//! passed directly to [`crate::tools::execute_batch`].
+//!
+//! # Syntax overview
+//!
+//! Each non-empty line (after stripping `#` comments) starts with a command
+//! keyword followed by optional arguments.
+//!
+//! ## Navigation
+//! ```text
+//! cd src/debug          # change current directory context
+//! cd src/debug/server.rs  # change to a specific file (extension required)
+//! ```
+//!
+//! ## File-based operations
+//! ```text
+//! list_symbols                         # uses current cd file
+//! list_symbols [server.rs child.rs]    # explicit list
+//! diagnostics [server.rs]
+//! hover server.rs 42 10                # filePath line col
+//! hover 42 10                          # uses current cd file
+//! rename_symbol server.rs 42 10 new_name
+//! ```
+//!
+//! ## Symbol-based operations
+//! ```text
+//! body [relay_command show_help]
+//! definition [MyStruct MyStruct.method]
+//! references [my_fn]
+//! docstring [MyTrait]
+//! impls [MyType]
+//! ```
+//!
+//! ## Item list expansion
+//! Lists use `[...]` with items separated by spaces, commas, or both.
+//! Brace expansion works like shell: `tools/{mod.rs x.rs}` expands to
+//! `tools/mod.rs` and `tools/x.rs`.
+//!
+//! ## Task management
+//! ```text
+//! set_task task-name Description text
+//! update_task task-name New description
+//! update_task task-name append=Additional text
+//! complete_task task-name
+//! list_tasks
+//! list_tasks completed
+//! add_subtask task-name sub-name Description
+//! complete_subtask task-name sub-name
+//! list_subtasks task-name
+//! list_subtasks task-name completed
+//! ```
+//!
+//! ## Background processes & triggers
+//! ```text
+//! start_process myproc cargo test [group=build]
+//! stop_process myproc
+//! search_output myproc error
+//! define_trigger myTrigger "^error" [before=3] [after=5] [timeout=30000] [group=build]
+//! await_trigger myTrigger
+//! ```
+//!
+//! ## Misc
+//! ```text
+//! request_human_message
+//! ```
+
+pub mod ops;
+pub mod parse;
+
+use std::path::{Path, PathBuf};
+
+use crate::tools::Operation;
+
+use ops::{has_extension, normalize_path, resolve_cd_path, *};
+use parse::{split_first_word, strip_comment};
+
+/// Parse a DSL command script into a list of operations.
+///
+/// Lines are processed in order. `cd` commands update the current path
+/// context used by subsequent file-based operations.
+/// All operations are collected and returned for concurrent execution.
+pub fn parse_dsl(commands: &str) -> Vec<Operation> {
+    let mut ops = Vec::new();
+    let mut ctx = DslContext::default();
+
+    for line in commands.lines() {
+        let line = strip_comment(line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (cmd, args) = split_first_word(line);
+        ctx.dispatch(&mut ops, cmd, args);
+    }
+
+    ops
+}
+
+// ── parsing context ───────────────────────────────────────────────────────────
+
+#[derive(Default)]
+struct DslContext {
+    /// Current directory prefix applied to file-path arguments.
+    cd_dir: PathBuf,
+    /// Set when `cd` targets a file (has an extension).
+    cd_file: Option<PathBuf>,
+}
+
+impl DslContext {
+    fn dispatch(&mut self, ops: &mut Vec<Operation>, cmd: &str, args: &str) {
+        match cmd {
+            "cd" => self.handle_cd(args),
+
+            // file-based
+            "list_symbols" => handle_list_symbols(ops, args, &self.cd_dir, self.cd_file.as_deref()),
+            "diagnostics" => handle_diagnostics(ops, args, &self.cd_dir, self.cd_file.as_deref()),
+            "hover" => handle_hover(ops, args, &self.cd_dir, self.cd_file.as_deref()),
+            "rename_symbol" => {
+                handle_rename_symbol(ops, args, &self.cd_dir, self.cd_file.as_deref())
+            }
+
+            // symbol-based
+            "body" => handle_body(ops, args),
+            "definition" => handle_definition(ops, args),
+            "references" => handle_references(ops, args),
+            "docstring" => handle_docstring(ops, args),
+            "impls" => handle_impls(ops, args),
+
+            // tasks
+            "set_task" => handle_set_task(ops, args),
+            "update_task" => handle_update_task(ops, args),
+            "complete_task" => handle_complete_task(ops, args),
+            "list_tasks" => handle_list_tasks(ops, args),
+            "add_subtask" => handle_add_subtask(ops, args),
+            "complete_subtask" => handle_complete_subtask(ops, args),
+            "list_subtasks" => handle_list_subtasks(ops, args),
+
+            // background / triggers
+            "start_process" => handle_start_process(ops, args),
+            "stop_process" => handle_stop_process(ops, args),
+            "search_output" => handle_search_output(ops, args),
+            "define_trigger" => handle_define_trigger(ops, args),
+            "await_trigger" => handle_await_trigger(ops, args),
+
+            // misc
+            "request_human_message" => ops.push(Operation::RequestHumanMessage),
+
+            // unknown → silently skip (forward-compat)
+            _ => {}
+        }
+    }
+
+    fn handle_cd(&mut self, path: &str) {
+        let path = path.trim();
+        if path.is_empty() {
+            return;
+        }
+        let raw = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            normalize_path(&self.cd_dir.join(path))
+        };
+        // Resolve extension-less paths against the workspace (cwd).
+        let resolved = resolve_cd_path(&raw);
+
+        if has_extension(&resolved) {
+            self.cd_file = Some(resolved.clone());
+            self.cd_dir = resolved.parent().unwrap_or(Path::new("")).to_path_buf();
+        } else {
+            self.cd_file = None;
+            self.cd_dir = resolved;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::Operation;
+
+    #[test]
+    fn test_cd_and_list_symbols() {
+        let ops = parse_dsl("cd src/debug\nlist_symbols [server.rs]");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            Operation::ListSymbols { file_path, .. } => {
+                assert_eq!(file_path, "src/debug/server.rs");
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cd_file_then_list_symbols() {
+        let ops = parse_dsl("cd src/debug/server.rs\nlist_symbols");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            Operation::ListSymbols { file_path, .. } => {
+                assert_eq!(file_path, "src/debug/server.rs");
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_body() {
+        let ops = parse_dsl("body [relay_command show_help]");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            Operation::Body { symbol_names, .. } => {
+                assert_eq!(symbol_names, &["relay_command", "show_help"]);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_comments_stripped() {
+        let ops = parse_dsl("# this is a comment\nbody [foo] # inline");
+        assert_eq!(ops.len(), 1);
+    }
+
+    #[test]
+    fn test_brace_expansion_in_list_symbols() {
+        let ops = parse_dsl("cd src\nlist_symbols [tools/{mod.rs symbol_list.rs}]");
+        assert_eq!(ops.len(), 2);
+        let paths: Vec<_> = ops
+            .iter()
+            .filter_map(|op| {
+                if let Operation::ListSymbols { file_path, .. } = op {
+                    Some(file_path.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(paths.contains(&"src/tools/mod.rs"));
+        assert!(paths.contains(&"src/tools/symbol_list.rs"));
+    }
+}

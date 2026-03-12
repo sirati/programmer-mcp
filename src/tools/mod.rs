@@ -1,5 +1,6 @@
 pub mod definition;
 pub mod diagnostics;
+pub mod dsl;
 pub mod formatting;
 pub mod hover;
 pub mod impls;

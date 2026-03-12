@@ -9,13 +9,53 @@ use rmcp::{
 use crate::background::BackgroundManager;
 use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
-use crate::tools::{self, Operation, OperationResult};
+use crate::tools::{self, OperationResult};
 
-/// The batch request: an array of operations to execute in parallel.
+/// The batch request: a DSL script of commands to execute.
 #[derive(Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 pub struct ExecuteRequest {
-    /// List of operations to execute concurrently
-    pub operations: Vec<Operation>,
+    /// Multi-line DSL script. Each line is one command; `#` starts a comment.
+    ///
+    /// Navigation:
+    ///   cd <dir>                  — set directory context (no extension = folder)
+    ///   cd <file.ext>             — set file context (extension required)
+    ///
+    /// File-based operations (use [file list] or current cd file):
+    ///   list_symbols [f1 f2]      — symbol tree of files
+    ///   diagnostics [f1 f2]       — errors/warnings for files
+    ///   hover <file> <line> <col> — hover info at position (file optional if cd'd)
+    ///   rename_symbol <file> <line> <col> <new_name>
+    ///
+    /// Symbol-based operations:
+    ///   body        [sym1 sym2]   — source body of symbols
+    ///   definition  [sym1 sym2]   — definition location
+    ///   references  [sym1 sym2]   — all usages
+    ///   docstring   [sym1 sym2]   — doc comments
+    ///   impls       [sym1 sym2]   — impl blocks (Rust)
+    ///
+    /// Item lists: [a, b, tools/{mod.rs x.rs}] — commas/spaces as separators,
+    /// brace expansion: tools/{mod.rs x.rs} → tools/mod.rs, tools/x.rs
+    ///
+    /// Task management:
+    ///   set_task <name> <description>
+    ///   update_task <name> <new_description>
+    ///   update_task <name> append=<text>
+    ///   complete_task <name>
+    ///   list_tasks [completed]
+    ///   add_subtask <task> <sub> <description>
+    ///   complete_subtask <task> <sub>
+    ///   list_subtasks <task> [completed]
+    ///
+    /// Background processes & triggers:
+    ///   start_process <name> <command> [args...] [group=<g>]
+    ///   stop_process <name>
+    ///   search_output <name> <pattern>
+    ///   define_trigger <name> <pattern> [before=N] [after=N] [timeout=N] [group=g]
+    ///   await_trigger <name>
+    ///
+    /// Misc:
+    ///   request_human_message
+    pub commands: String,
 }
 
 #[derive(Clone)]
@@ -42,49 +82,58 @@ impl ProgrammerServer {
     }
 
     #[tool(
-        description = "Execute one or more language server operations in parallel.\n\
-        CRITICAL: ALWAYS batch ALL related operations into a single call. \
-        NEVER make separate calls when multiple operations can be combined. \
-        Every call should contain as many operations as possible.\n\n\
-        Supported operations:\n\
-        LSP / code navigation:\n\
-        - definition: get symbol source (symbolNames: string or array)\n\
-        - references: find all usages (symbolNames: string or array)\n\
-        - list_symbols: tree of symbols in a file (filePath, maxDepth)\n\
-        - docstring: get doc comments (symbolNames: string or array)\n\
-        - body: get symbol source body (symbolNames: string or array)\n\
-        - impls: find all impl blocks for a type (symbolNames: string or array)\n\
-        - diagnostics: get file errors/warnings (filePath)\n\
-        - hover: get type/docs at position (filePath, line, column)\n\
-        - rename_symbol: rename across project (filePath, line, column, newName)\n\
-        - raw_lsp_request: raw LSP query (method, params, language)\n\n\
-        Background processes:\n\
-        - start_process: start a named background process (name, command, args, group)\n\
-        - stop_process: stop a background process by name\n\
-        - search_process_output: grep background process output (name/group, pattern)\n\
-        - define_trigger: define a trigger on process output (name, pattern, linesBefore, linesAfter, timeoutMs, group)\n\
-        - await_trigger: wait for a trigger to fire (name)\n\n\
-        Task management (saved to .programmer-mcp/tasks/):\n\
-        - set_task: create/replace a task (name, description)\n\
-        - update_task: update description/appendDescription/completed flag (name, ...)\n\
-        - add_subtask: add a subtask to a task (taskName, subtaskName, description)\n\
-        - complete_task: mark a task done (name)\n\
-        - complete_subtask: mark a subtask done (taskName, subtaskName)\n\
-        - list_tasks: list pending tasks; pass includeCompleted=true for all\n\
-        - list_subtasks: list pending subtasks of a task (taskName, includeCompleted)\n\n\
-        Misc:\n\
-        - request_human_message: block until human sends a message\n\n\
-        Each LSP operation can optionally specify 'language' to target a specific LSP."
+        description = "Execute language server operations using a DSL script.\n\
+        CRITICAL: ALWAYS batch ALL related commands into a single call — pack as many\n\
+        commands as possible per invocation.\n\n\
+        Each line is one command; `#` starts a comment.\n\n\
+        NAVIGATION:\n\
+          cd src/debug            # directory context (no extension)\n\
+          cd src/debug/server.rs  # file context (extension required)\n\n\
+        FILE-BASED OPS (use [list] or current cd file):\n\
+          list_symbols [server.rs child.rs]\n\
+          list_symbols                     # uses current cd file\n\
+          diagnostics [server.rs]\n\
+          hover src/main.rs 42 10\n\
+          hover 42 10                      # uses current cd file\n\
+          rename_symbol src/main.rs 42 10 new_name\n\n\
+        SYMBOL-BASED OPS:\n\
+          body        [relay_command show_help]\n\
+          definition  [MyStruct MyStruct.method]\n\
+          references  [my_fn]\n\
+          docstring   [MyTrait]\n\
+          impls       [MyType]\n\n\
+        LIST SYNTAX: [a, b, tools/{mod.rs x.rs}]\n\
+          • separators: space, comma, or both\n\
+          • brace expansion: tools/{mod.rs x.rs} → tools/mod.rs tools/x.rs\n\
+          • find_{a b} → find_a find_b\n\n\
+        TASKS:\n\
+          set_task task-name Description text\n\
+          update_task task-name New description\n\
+          update_task task-name append=More text\n\
+          complete_task task-name\n\
+          list_tasks [completed]\n\
+          add_subtask task-name sub-name Description\n\
+          complete_subtask task-name sub-name\n\
+          list_subtasks task-name [completed]\n\n\
+        BACKGROUND & TRIGGERS:\n\
+          start_process myproc cargo test [group=build]\n\
+          stop_process myproc\n\
+          search_output myproc error\n\
+          define_trigger t error [before=3] [after=5] [timeout=30000] [group=build]\n\
+          await_trigger t\n\n\
+        MISC:\n\
+          request_human_message"
     )]
     async fn execute(
         &self,
         Parameters(request): Parameters<ExecuteRequest>,
     ) -> Result<CallToolResult, McpError> {
+        let operations = tools::dsl::parse_dsl(&request.commands);
         let results = tools::execute_batch(
             &self.manager,
             &self.message_bus,
             &self.background,
-            request.operations,
+            operations,
         )
         .await;
 
@@ -122,12 +171,11 @@ impl ServerHandler for ProgrammerServer {
             ))
             .with_instructions(
                 "Multi-language LSP + task management server.\n\
-                 RULE: ALWAYS pass multiple operations in a single 'execute' call. \
-                 Never issue separate calls when the operations are independent — \
-                 they run in parallel and the combined result is returned at once.\n\
-                 Use 'definition'/'body' to read code, 'references' to find usages, \
-                 'list_symbols' to explore a file, 'diagnostics' for errors, \
-                 'start_process'/'define_trigger'/'await_trigger' for build/test workflows, \
+                 RULE: ALWAYS pack as many commands as possible into a single 'execute' call.\n\
+                 Never issue separate calls when operations are independent — they run in parallel.\n\
+                 Use 'cd' + 'list_symbols'/'body'/'definition' to navigate code,\n\
+                 'references' to find usages, 'diagnostics' for errors,\n\
+                 'start_process'/'define_trigger'/'await_trigger' for build/test workflows,\n\
                  and 'set_task'/'list_tasks' to track work items.",
             )
     }
