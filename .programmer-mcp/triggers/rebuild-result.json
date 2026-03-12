@@ -1,0 +1,8 @@
+{
+  "name": "rebuild-result",
+  "pattern": "rebuild",
+  "lines_before": 0,
+  "lines_after": 10,
+  "timeout_ms": 300000,
+  "group": null
+}

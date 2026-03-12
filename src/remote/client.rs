@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rmcp::{
     model::{
@@ -71,7 +72,14 @@ struct ConnectionParams {
 
 struct ActiveConnection {
     relay: RelayChannel<OwnedWriteHalf, OwnedReadHalf>,
-    _session_ssh: tokio::process::Child,
+    session_ssh: tokio::process::Child,
+}
+
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        // Best-effort kill; ignore errors (process may have already exited).
+        self.session_ssh.start_kill().ok();
+    }
 }
 
 impl ConnectionParams {
@@ -108,10 +116,7 @@ impl ConnectionParams {
         let (read_half, write_half) = stream.into_split();
         let relay = RelayChannel::new(write_half, read_half);
 
-        Ok(ActiveConnection {
-            relay,
-            _session_ssh: session_ssh,
-        })
+        Ok(ActiveConnection { relay, session_ssh })
     }
 
     /// Try to reconnect, retrying once per second for up to 30 seconds.
@@ -135,39 +140,111 @@ impl ConnectionParams {
 
 // ── MCP proxy server ──────────────────────────────────────────────────────────
 
+/// Shared setup state: `None` = still connecting, `Some(Ok)` = ready,
+/// `Some(Err(msg))` = failed.
+type SetupState = Arc<std::sync::Mutex<Option<Result<(), String>>>>;
+
 #[derive(Clone)]
 struct RemoteProxyServer {
-    conn: Arc<Mutex<ActiveConnection>>,
-    conn_params: Arc<ConnectionParams>,
+    /// The live connection; `None` while SSH setup is still running.
+    conn: Arc<Mutex<Option<ActiveConnection>>>,
+    /// Connection parameters for reconnection; `None` while SSH setup is still running.
+    conn_params: Arc<Mutex<Option<Arc<ConnectionParams>>>>,
+    /// Signals when SSH setup has finished (success or failure).
+    setup_watch: tokio::sync::watch::Receiver<bool>,
+    /// Error message if setup failed.
+    setup_state: SetupState,
     next_id: Arc<AtomicU64>,
 }
 
 impl RemoteProxyServer {
+    /// Block until the initial SSH setup completes (or fails / times out).
+    async fn wait_for_setup(&self) -> Result<(), McpError> {
+        // Fast path: already done.
+        if *self.setup_watch.borrow() {
+            return self.check_setup_error();
+        }
+
+        let mut rx = self.setup_watch.clone();
+        let timed_out = tokio::time::timeout(Duration::from_secs(60), rx.wait_for(|v| *v))
+            .await
+            .is_err();
+        drop(rx);
+        if timed_out {
+            return Err(McpError::internal_error(
+                "timed out waiting for SSH connection (60s)",
+                None,
+            ));
+        }
+        self.check_setup_error()
+    }
+
+    fn check_setup_error(&self) -> Result<(), McpError> {
+        if let Some(Err(msg)) = self.setup_state.lock().unwrap().as_ref() {
+            return Err(McpError::internal_error(
+                format!("SSH setup failed: {msg}"),
+                None,
+            ));
+        }
+        Ok(())
+    }
+
     /// Relay a JSON-RPC request, reconnecting on failure.
     async fn relay_with_reconnect(&self, req_json: &str) -> Result<String, McpError> {
+        info!("relay_with_reconnect: waiting for setup");
+        self.wait_for_setup().await?;
+        info!("relay_with_reconnect: setup ready, acquiring conn lock");
+
         // First attempt
         {
-            let mut conn = self.conn.lock().await;
-            match conn.relay.relay(req_json).await {
-                Ok(raw) => return Ok(raw),
-                Err(e) => {
-                    warn!("relay failed, attempting reconnect: {e}");
+            let mut guard = self.conn.lock().await;
+            info!(
+                "relay_with_reconnect: conn lock acquired, conn present={}",
+                guard.is_some()
+            );
+            if let Some(conn) = guard.as_mut() {
+                info!(
+                    "relay_with_reconnect: calling relay.relay (initialized={})",
+                    conn.relay.is_initialized()
+                );
+                match conn.relay.relay(req_json).await {
+                    Ok(raw) => {
+                        info!("relay_with_reconnect: relay succeeded");
+                        return Ok(raw);
+                    }
+                    Err(e) => {
+                        warn!("relay failed, attempting reconnect: {e}");
+                    }
                 }
             }
         }
 
         // Reconnect
-        let new_conn = self.conn_params.reconnect().await.map_err(|e| {
-            McpError::internal_error(format!("reconnect failed: {e}"), None)
+        info!("relay_with_reconnect: attempting reconnect");
+        let params_guard = self.conn_params.lock().await;
+        let params = params_guard.as_ref().ok_or_else(|| {
+            McpError::internal_error("no connection params available for reconnect", None)
         })?;
+        let new_conn = params
+            .reconnect()
+            .await
+            .map_err(|e| McpError::internal_error(format!("reconnect failed: {e}"), None))?;
+        drop(params_guard);
 
-        let mut conn = self.conn.lock().await;
-        *conn = new_conn;
+        info!("relay_with_reconnect: reconnected, retrying request");
+        let mut guard = self.conn.lock().await;
+        *guard = Some(new_conn);
 
         // Retry the request
-        conn.relay.relay(req_json).await.map_err(|e| {
-            McpError::internal_error(format!("relay failed after reconnect: {e}"), None)
-        })
+        guard
+            .as_mut()
+            .unwrap()
+            .relay
+            .relay(req_json)
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("relay failed after reconnect: {e}"), None)
+            })
     }
 }
 
@@ -236,9 +313,9 @@ fn extract_call_result(raw: &str) -> Result<CallToolResult, McpError> {
         return Ok(CallToolResult::error(vec![Content::text(msg)]));
     }
 
-    let result = val.get("result").ok_or_else(|| {
-        McpError::internal_error("missing result in remote response", None)
-    })?;
+    let result = val
+        .get("result")
+        .ok_or_else(|| McpError::internal_error("missing result in remote response", None))?;
 
     serde_json::from_value(result.clone()).map_err(|e| {
         McpError::internal_error(
@@ -251,25 +328,57 @@ fn extract_call_result(raw: &str) -> Result<CallToolResult, McpError> {
 // ── entry point ───────────────────────────────────────────────────────────────
 
 pub async fn run_remote_client(config: Config) -> anyhow::Result<()> {
-    let remote_str = config.remote.as_deref().unwrap();
-    let spec = RemoteSpec::parse(remote_str)?;
+    let remote_str = config.remote.as_deref().unwrap().to_string();
+    let debug_mode = config.debug;
 
-    let remote_control = find_remote_socket(&spec, config.debug).await?;
-    info!(socket = %remote_control, "found remote control socket");
+    // Shared state populated by the background setup task.
+    let conn: Arc<Mutex<Option<ActiveConnection>>> = Arc::new(Mutex::new(None));
+    let conn_params: Arc<Mutex<Option<Arc<ConnectionParams>>>> = Arc::new(Mutex::new(None));
+    let setup_state: SetupState = Arc::new(std::sync::Mutex::new(None));
+    let (setup_tx, setup_rx) = tokio::sync::watch::channel(false);
 
-    let local_dir = tempfile::tempdir()?;
-    let conn_params = Arc::new(ConnectionParams {
-        spec,
-        remote_control,
-        local_dir,
-    });
+    // Spawn SSH setup in the background so stdio is available immediately.
+    {
+        let conn = conn.clone();
+        let conn_params = conn_params.clone();
+        let setup_state = setup_state.clone();
+        tokio::spawn(async move {
+            let result: anyhow::Result<()> = async {
+                let spec = RemoteSpec::parse(&remote_str)?;
+                let remote_control = find_remote_socket(&spec, debug_mode).await?;
+                info!(socket = %remote_control, "found remote control socket");
 
-    let initial_conn = conn_params.connect().await?;
-    info!("initial connection ready");
+                let local_dir = tempfile::tempdir()?;
+                let params = Arc::new(ConnectionParams {
+                    spec,
+                    remote_control,
+                    local_dir,
+                });
+
+                let initial_conn = params.connect().await?;
+                info!("initial connection ready");
+
+                *conn_params.lock().await = Some(params);
+                *conn.lock().await = Some(initial_conn);
+                Ok(())
+            }
+            .await;
+
+            let outcome = result.map_err(|e| e.to_string());
+            if let Err(ref msg) = outcome {
+                tracing::error!("SSH setup failed: {msg}");
+            }
+            *setup_state.lock().unwrap() = Some(outcome);
+            // Notify waiters regardless of success/failure.
+            setup_tx.send(true).ok();
+        });
+    }
 
     let proxy = RemoteProxyServer {
-        conn: Arc::new(Mutex::new(initial_conn)),
+        conn,
         conn_params,
+        setup_watch: setup_rx,
+        setup_state,
         next_id: Arc::new(AtomicU64::new(1)),
     };
 
@@ -332,6 +441,7 @@ fn start_ssh_forward(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()?;
 
     Ok(child)

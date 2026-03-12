@@ -70,10 +70,25 @@ pub async fn find_containing_symbol_range(
     let doc_symbols = client.document_symbol(uri).await.ok()?;
 
     match doc_symbols {
-        DocumentSymbolResponse::Flat(symbols) => symbols
-            .iter()
-            .find(|s| contains_position(&s.location.range, position))
-            .map(|s| s.location.range),
+        DocumentSymbolResponse::Flat(symbols) => {
+            // Find the smallest (most specific) range that contains `position`.
+            // This avoids returning a broad container like `impl Foo { … }` when
+            // a more specific child (e.g. a method) is available.
+            symbols
+                .iter()
+                .filter(|s| contains_position(&s.location.range, position))
+                .min_by_key(|s| {
+                    let r = &s.location.range;
+                    let lines = r.end.line.saturating_sub(r.start.line);
+                    let chars = if r.start.line == r.end.line {
+                        r.end.character.saturating_sub(r.start.character)
+                    } else {
+                        r.end.character
+                    };
+                    (lines, chars)
+                })
+                .map(|s| s.location.range)
+        }
         DocumentSymbolResponse::Nested(symbols) => find_in_nested(&symbols, position),
     }
 }

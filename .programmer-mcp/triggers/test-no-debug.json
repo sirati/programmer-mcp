@@ -1,0 +1,8 @@
+{
+  "name": "test-no-debug",
+  "pattern": "===",
+  "lines_before": 0,
+  "lines_after": 80,
+  "timeout_ms": 60000,
+  "group": null
+}

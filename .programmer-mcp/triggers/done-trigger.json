@@ -1,0 +1,8 @@
+{
+  "name": "done-trigger",
+  "pattern": "Process exited",
+  "lines_before": 0,
+  "lines_after": 200,
+  "timeout_ms": 120000,
+  "group": "test"
+}

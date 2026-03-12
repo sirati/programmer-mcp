@@ -1,0 +1,8 @@
+{
+  "name": "await-result",
+  "pattern": "Process exited",
+  "lines_before": 0,
+  "lines_after": 5,
+  "timeout_ms": 60000,
+  "group": null
+}

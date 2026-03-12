@@ -3,6 +3,7 @@ mod config;
 mod debug;
 mod ipc;
 mod lsp;
+mod nix;
 mod relay;
 mod remote;
 mod server;
@@ -12,6 +13,8 @@ mod watcher;
 use std::sync::Arc;
 
 use rmcp::{transport::stdio, ServiceExt};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 use background::BackgroundManager;
@@ -41,17 +44,61 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let config = Config::parse_and_validate()?;
+
+    // Set up tracing.  Remote-proxy mode is launched as a silent subprocess by MCP clients
+    // (Zed, Claude, …) whose stderr is never shown.  Write a fresh timestamped log file so
+    // failures are always diagnosable.
+    if config.remote.is_some() {
+        let log_dir = Config::socket_dir().join("logs");
+        std::fs::create_dir_all(&log_dir)?;
+
+        // One file per invocation, named by unix timestamp in millis.
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let remote_str = config
+            .remote
+            .as_deref()
+            .unwrap_or("unknown")
+            .replace('/', "_");
+        let log_path = log_dir.join(format!("remote-{remote_str}-{ts}.log"));
+
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&log_path)?;
+
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::sync::Mutex::new(log_file))
+            .with_ansi(false);
+        let stderr_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_ansi(false);
+
+        tracing_subscriber::registry()
+            .with(EnvFilter::from_default_env().add_directive(tracing::Level::DEBUG.into()))
+            .with(file_layer)
+            .with(stderr_layer)
+            .init();
+
+        tracing::info!(
+            "programmer-mcp remote proxy: logging to {}",
+            log_path.display()
+        );
+        return remote::run_remote_client(config).await;
+    }
+
+    // Normal and debug modes just log to stderr.
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::DEBUG.into()))
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
 
-    let config = Config::parse_and_validate()?;
-
-    if config.remote.is_some() {
-        remote::run_remote_client(config).await
-    } else if config.debug {
+    if config.debug {
         run_debug_server(config).await
     } else {
         run_normal_server(config).await
@@ -67,7 +114,11 @@ async fn run_debug_server(config: Config) -> anyhow::Result<()> {
         .iter()
         .map(|s| s.to_spec_string())
         .collect();
-    let server = DebugServer::new(config.workspace().to_path_buf(), cli_lsp_specs, original_args);
+    let server = DebugServer::new(
+        config.workspace().to_path_buf(),
+        cli_lsp_specs,
+        original_args,
+    );
 
     // Start remote listener for debug server too
     let remote_listener = remote::RemoteListener::new(config.socket_path());

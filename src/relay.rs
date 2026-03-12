@@ -32,17 +32,27 @@ impl<W: AsyncWrite + Unpin, R: AsyncRead + Unpin> RelayChannel<W, R> {
     /// Send a JSON-RPC request and wait for the matching response.
     /// Automatically initializes the MCP session on first use.
     pub async fn relay(&mut self, request_json: &str) -> anyhow::Result<String> {
+        tracing::debug!(
+            relay.initialized = self.initialized,
+            "relay: entering relay()"
+        );
         if !self.initialized {
+            tracing::debug!("relay: calling ensure_initialized");
             self.ensure_initialized().await?;
+            tracing::debug!("relay: ensure_initialized complete");
         }
+        tracing::debug!("relay: writing request");
         write_line(&mut self.writer, request_json).await?;
         let expected_id = extract_id(request_json);
-        tokio::time::timeout(
+        tracing::debug!(?expected_id, "relay: waiting for response");
+        let result = tokio::time::timeout(
             Duration::from_secs(RELAY_TIMEOUT_SECS),
             read_matching_response(&mut self.reader, expected_id),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("relay timed out waiting for response"))?
+        .map_err(|_| anyhow::anyhow!("relay timed out waiting for response"))?;
+        tracing::debug!("relay: got response");
+        result
     }
 
     /// Perform MCP initialize handshake.
@@ -62,7 +72,9 @@ impl<W: AsyncWrite + Unpin, R: AsyncRead + Unpin> RelayChannel<W, R> {
         })
         .to_string();
 
+        tracing::debug!("relay: sending initialize to downstream server");
         write_line(&mut self.writer, &init_req).await?;
+        tracing::debug!("relay: waiting for initialize response (timeout={INIT_TIMEOUT_SECS}s)");
 
         tokio::time::timeout(
             Duration::from_secs(INIT_TIMEOUT_SECS),
@@ -72,6 +84,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncRead + Unpin> RelayChannel<W, R> {
         .map_err(|_| anyhow::anyhow!("MCP initialize timed out after {INIT_TIMEOUT_SECS}s"))?
         .map_err(|e| anyhow::anyhow!("MCP initialize handshake failed: {e}"))?;
 
+        tracing::debug!("relay: received initialize response, sending notifications/initialized");
         let notif = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
@@ -79,6 +92,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncRead + Unpin> RelayChannel<W, R> {
         })
         .to_string();
         write_line(&mut self.writer, &notif).await?;
+        tracing::debug!("relay: ensure_initialized done");
 
         self.initialized = true;
         Ok(())
@@ -90,9 +104,11 @@ impl<W: AsyncWrite + Unpin, R: AsyncRead + Unpin> RelayChannel<W, R> {
 }
 
 async fn write_line(writer: &mut (impl AsyncWrite + Unpin), line: &str) -> anyhow::Result<()> {
+    tracing::trace!(len = line.len(), "relay: write_line {} bytes", line.len());
     writer.write_all(line.as_bytes()).await?;
     writer.write_all(b"\n").await?;
     writer.flush().await?;
+    tracing::trace!("relay: write_line flushed");
     Ok(())
 }
 
@@ -101,11 +117,15 @@ fn read_matching_response<'a, R: AsyncRead + Unpin>(
     expected_id: Option<Value>,
 ) -> impl std::future::Future<Output = anyhow::Result<String>> + 'a {
     async move {
+        tracing::debug!(?expected_id, "relay: read_matching_response waiting for id");
         let mut line = String::new();
         loop {
             line.clear();
+            tracing::trace!("relay: read_matching_response calling read_line");
             let n = reader.read_line(&mut line).await?;
+            tracing::trace!(n, "relay: read_line returned {n} bytes");
             if n == 0 {
+                tracing::warn!("relay: channel closed (EOF) while waiting for id={expected_id:?}");
                 anyhow::bail!("relay channel closed unexpectedly");
             }
             let trimmed = line.trim();
@@ -114,10 +134,18 @@ fn read_matching_response<'a, R: AsyncRead + Unpin>(
             }
             if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
                 let response_id = val.get("id").cloned();
+                tracing::trace!(?response_id, ?expected_id, "relay: got line with id");
                 if response_id == expected_id {
+                    tracing::debug!(?expected_id, "relay: matched response id");
                     return Ok(trimmed.to_string());
                 }
-                tracing::debug!("discarding unmatched relay line");
+                tracing::debug!(
+                    ?response_id,
+                    ?expected_id,
+                    "relay: discarding unmatched relay line"
+                );
+            } else {
+                tracing::debug!(line = %trimmed, "relay: discarding non-JSON line");
             }
         }
     }

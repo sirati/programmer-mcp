@@ -52,3 +52,43 @@ RelayChannel.relay not found
 Channel.ensure_initialized not found
 
 we need to be able to deal with such confusing ai input, first look for the parent symbol and of it the child, if not these the child fuzzy, if not there again with parent fuzzy, if not there only the child, if not there only the child fuzzy
+
+another thing I have noticed is that ssh connections are not closed then the program shuts down, so they are left behind :(
+
+
+
+it happens quite often that you get confused on how to call a function through the relay:
+```
+{
+  "method": "tools/call",
+  "params": {
+    "arguments": {
+      "filePath": "src/remote/listener.rs",
+      "operations": [
+        {
+          "filePath": "src/remote/listener.rs",
+          "operation": "list_symbols"
+        }
+      ]
+    },
+    "name": "execute"
+  }
+}
+```
+e.g. here filePath is included twice, the one at the arguments level is definitely wrong
+lets do the following to fix the issue:
+lets split the debug relay functions into two parts:
+show-help, and execute
+show-help will call tools/list of the child
+execute will call execute of the child through tools/call
+
+the second suggestion is to radiacally change the syntax of execute, lets have all arguments be a single text, with commands being the first word in a line and them separated by new lines
+e.g.
+```
+cd src  #cd is only available for folders and also files cd /src/main.rs (in case of cd the extension is mandatory)
+list_symbols [main, tools/{mod.rs symbol_info.rs definition}] #for files the extension is optional, list is defined by [] separated by either space or comma or both or multiple, one can use {} to define variants e.g. [main, tools/{mod.rs symbol_info.rs}] is equivalent to [main, tools{/mod.rs /symbol_info.rs}] or [main, tools/mod.rs tools/symbol_info.rs]
+cd tools/mod.rs
+body [execute_one .{}]
+cd ../symbol_search.rs
+bosy [filter_exact_matches,find_{symbol_with_fallback ,similar_in_document} collect_nested_matches] #inside of {} space or comma are also the separators
+```

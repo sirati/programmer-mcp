@@ -37,11 +37,6 @@ result-*
 # direnv
 .direnv/
 
-
-# our debug binary
-/debug-mcp/programmer-mcp
-/debug-mcp/programmer-mcp.old
-
 # IPC socket
 .programmer-mcp.sock
 

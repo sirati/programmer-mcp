@@ -42,10 +42,12 @@ impl ProgrammerServer {
     }
 
     #[tool(
-        description = "Execute one or more language server operations in parallel. \
-        ALWAYS batch multiple operations into a single call — do not make separate calls \
-        for each symbol or file.\n\
+        description = "Execute one or more language server operations in parallel.\n\
+        CRITICAL: ALWAYS batch ALL related operations into a single call. \
+        NEVER make separate calls when multiple operations can be combined. \
+        Every call should contain as many operations as possible.\n\n\
         Supported operations:\n\
+        LSP / code navigation:\n\
         - definition: get symbol source (symbolNames: string or array)\n\
         - references: find all usages (symbolNames: string or array)\n\
         - list_symbols: tree of symbols in a file (filePath, maxDepth)\n\
@@ -55,14 +57,24 @@ impl ProgrammerServer {
         - diagnostics: get file errors/warnings (filePath)\n\
         - hover: get type/docs at position (filePath, line, column)\n\
         - rename_symbol: rename across project (filePath, line, column, newName)\n\
-        - raw_lsp_request: raw LSP query (method, params, language)\n\
-        - request_human_message: block until human sends a message\n\
+        - raw_lsp_request: raw LSP query (method, params, language)\n\n\
+        Background processes:\n\
         - start_process: start a named background process (name, command, args, group)\n\
         - stop_process: stop a background process by name\n\
         - search_process_output: grep background process output (name/group, pattern)\n\
         - define_trigger: define a trigger on process output (name, pattern, linesBefore, linesAfter, timeoutMs, group)\n\
-        - await_trigger: wait for a trigger to fire (name)\n\
-        Each operation can optionally specify 'language' to target a specific LSP."
+        - await_trigger: wait for a trigger to fire (name)\n\n\
+        Task management (saved to .programmer-mcp/tasks/):\n\
+        - set_task: create/replace a task (name, description)\n\
+        - update_task: update description/appendDescription/completed flag (name, ...)\n\
+        - add_subtask: add a subtask to a task (taskName, subtaskName, description)\n\
+        - complete_task: mark a task done (name)\n\
+        - complete_subtask: mark a subtask done (taskName, subtaskName)\n\
+        - list_tasks: list pending tasks; pass includeCompleted=true for all\n\
+        - list_subtasks: list pending subtasks of a task (taskName, includeCompleted)\n\n\
+        Misc:\n\
+        - request_human_message: block until human sends a message\n\n\
+        Each LSP operation can optionally specify 'language' to target a specific LSP."
     )]
     async fn execute(
         &self,
@@ -109,9 +121,14 @@ impl ServerHandler for ProgrammerServer {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-                "Multi-language LSP server. Use the 'execute' tool with an array of operations \
-                 to query definitions, references, diagnostics, hover info, or rename symbols. \
-                 Operations run in parallel. Specify 'language' to target a specific LSP.",
+                "Multi-language LSP + task management server.\n\
+                 RULE: ALWAYS pass multiple operations in a single 'execute' call. \
+                 Never issue separate calls when the operations are independent — \
+                 they run in parallel and the combined result is returned at once.\n\
+                 Use 'definition'/'body' to read code, 'references' to find usages, \
+                 'list_symbols' to explore a file, 'diagnostics' for errors, \
+                 'start_process'/'define_trigger'/'await_trigger' for build/test workflows, \
+                 and 'set_task'/'list_tasks' to track work items.",
             )
     }
 }

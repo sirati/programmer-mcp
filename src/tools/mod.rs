@@ -179,6 +179,66 @@ pub enum Operation {
     /// Block until a human sends a message via the Unix socket IPC.
     /// Use this instead of ending the session when you need human input.
     RequestHumanMessage,
+    /// Create or replace a named task (saved to .programmer-mcp/tasks/{name}.json)
+    SetTask {
+        /// Unique task name
+        name: String,
+        /// Task description / notes
+        description: String,
+    },
+    /// Update an existing task's description and/or completion status
+    UpdateTask {
+        /// Task name
+        name: String,
+        /// Replace description with this (mutually exclusive with appendDescription)
+        #[serde(rename = "description")]
+        new_description: Option<String>,
+        /// Append this text to the existing description
+        #[serde(rename = "appendDescription")]
+        append_description: Option<String>,
+        /// Mark task as completed (true) or reopen it (false)
+        completed: Option<bool>,
+    },
+    /// Add or update a subtask within a task
+    AddSubtask {
+        /// Parent task name
+        #[serde(rename = "taskName")]
+        task_name: String,
+        /// Subtask name
+        #[serde(rename = "subtaskName")]
+        subtask_name: String,
+        /// Subtask description
+        description: String,
+    },
+    /// Mark a task as completed
+    CompleteTask {
+        /// Task name to mark done
+        name: String,
+    },
+    /// Mark a subtask as completed
+    CompleteSubtask {
+        /// Parent task name
+        #[serde(rename = "taskName")]
+        task_name: String,
+        /// Subtask name to mark done
+        #[serde(rename = "subtaskName")]
+        subtask_name: String,
+    },
+    /// List tasks (default: only pending tasks)
+    ListTasks {
+        /// Include completed tasks in output (default false)
+        #[serde(rename = "includeCompleted", default)]
+        include_completed: bool,
+    },
+    /// List subtasks of a task (default: only pending subtasks)
+    ListSubtasks {
+        /// Task name
+        #[serde(rename = "taskName")]
+        task_name: String,
+        /// Include completed subtasks in output (default false)
+        #[serde(rename = "includeCompleted", default)]
+        include_completed: bool,
+    },
 }
 
 fn default_max_depth() -> usize {
@@ -432,11 +492,12 @@ async fn execute_one(
             group,
         } => {
             // Start process
-            let result = background
-                .processes
-                .lock()
-                .await
-                .start(name.clone(), group.clone(), &command, &args);
+            let result = background.processes.lock().await.start(
+                name.clone(),
+                group.clone(),
+                &command,
+                &args,
+            );
 
             // If group is set, auto-attach matching triggers
             if let (Ok(()), Some(ref grp)) = (&result, &group) {
@@ -471,20 +532,18 @@ async fn execute_one(
             }
         }
 
-        Operation::StopProcess { name } => {
-            match background.processes.lock().await.stop(&name) {
-                Ok(()) => OperationResult {
-                    operation: "stop_process".into(),
-                    success: true,
-                    output: String::new(),
-                },
-                Err(e) => OperationResult {
-                    operation: "stop_process".into(),
-                    success: false,
-                    output: e,
-                },
-            }
-        }
+        Operation::StopProcess { name } => match background.processes.lock().await.stop(&name) {
+            Ok(()) => OperationResult {
+                operation: "stop_process".into(),
+                success: true,
+                output: String::new(),
+            },
+            Err(e) => OperationResult {
+                operation: "stop_process".into(),
+                success: false,
+                output: e,
+            },
+        },
 
         Operation::SearchProcessOutput {
             name,
@@ -498,9 +557,7 @@ async fn execute_one(
             } else {
                 results
                     .into_iter()
-                    .map(|(proc_name, lines)| {
-                        format!("--- {proc_name} ---\n{}", lines.join("\n"))
-                    })
+                    .map(|(proc_name, lines)| format!("--- {proc_name} ---\n{}", lines.join("\n")))
                     .collect::<Vec<_>>()
                     .join("\n\n")
             };
@@ -615,6 +672,133 @@ async fn execute_one(
                 operation: "request_human_message".into(),
                 success: true,
                 output: msg,
+            }
+        }
+
+        Operation::SetTask { name, description } => {
+            match background.tasks.lock().await.set_task(&name, &description) {
+                Ok(()) => OperationResult {
+                    operation: "set_task".into(),
+                    success: true,
+                    output: format!("task '{name}' set"),
+                },
+                Err(e) => OperationResult {
+                    operation: "set_task".into(),
+                    success: false,
+                    output: e,
+                },
+            }
+        }
+
+        Operation::UpdateTask {
+            name,
+            new_description,
+            append_description,
+            completed,
+        } => {
+            match background.tasks.lock().await.update_task(
+                &name,
+                new_description.as_deref(),
+                append_description.as_deref(),
+                completed,
+            ) {
+                Ok(()) => OperationResult {
+                    operation: "update_task".into(),
+                    success: true,
+                    output: format!("task '{name}' updated"),
+                },
+                Err(e) => OperationResult {
+                    operation: "update_task".into(),
+                    success: false,
+                    output: e,
+                },
+            }
+        }
+
+        Operation::AddSubtask {
+            task_name,
+            subtask_name,
+            description,
+        } => {
+            match background
+                .tasks
+                .lock()
+                .await
+                .add_subtask(&task_name, &subtask_name, &description)
+            {
+                Ok(()) => OperationResult {
+                    operation: "add_subtask".into(),
+                    success: true,
+                    output: format!("subtask '{subtask_name}' added to '{task_name}'"),
+                },
+                Err(e) => OperationResult {
+                    operation: "add_subtask".into(),
+                    success: false,
+                    output: e,
+                },
+            }
+        }
+
+        Operation::CompleteTask { name } => {
+            match background.tasks.lock().await.complete_task(&name) {
+                Ok(()) => OperationResult {
+                    operation: "complete_task".into(),
+                    success: true,
+                    output: format!("task '{name}' marked completed"),
+                },
+                Err(e) => OperationResult {
+                    operation: "complete_task".into(),
+                    success: false,
+                    output: e,
+                },
+            }
+        }
+
+        Operation::CompleteSubtask {
+            task_name,
+            subtask_name,
+        } => {
+            match background
+                .tasks
+                .lock()
+                .await
+                .complete_subtask(&task_name, &subtask_name)
+            {
+                Ok(()) => OperationResult {
+                    operation: "complete_subtask".into(),
+                    success: true,
+                    output: format!("subtask '{subtask_name}' in '{task_name}' marked completed"),
+                },
+                Err(e) => OperationResult {
+                    operation: "complete_subtask".into(),
+                    success: false,
+                    output: e,
+                },
+            }
+        }
+
+        Operation::ListTasks { include_completed } => {
+            let output = background.tasks.lock().await.list_tasks(include_completed);
+            OperationResult {
+                operation: "list_tasks".into(),
+                success: true,
+                output,
+            }
+        }
+
+        Operation::ListSubtasks {
+            task_name,
+            include_completed,
+        } => {
+            let output = background
+                .tasks
+                .lock()
+                .await
+                .list_subtasks(&task_name, include_completed);
+            OperationResult {
+                operation: "list_subtasks".into(),
+                success: true,
+                output,
             }
         }
     }
@@ -847,8 +1031,8 @@ async fn run_trigger_scanner(
                 drop(procs);
 
                 // Wait briefly for after-lines
-                let after_deadline = tokio::time::Instant::now()
-                    + std::time::Duration::from_millis(timeout_ms);
+                let after_deadline =
+                    tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 let mut collected_after = 0;
 
                 while collected_after < lines_after {
