@@ -3,6 +3,8 @@ mod config;
 mod debug;
 mod ipc;
 mod lsp;
+mod relay;
+mod remote;
 mod server;
 mod tools;
 mod watcher;
@@ -47,7 +49,9 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::parse_and_validate()?;
 
-    if config.debug {
+    if config.remote.is_some() {
+        remote::run_remote_client(config).await
+    } else if config.debug {
         run_debug_server(config).await
     } else {
         run_normal_server(config).await
@@ -63,7 +67,11 @@ async fn run_debug_server(config: Config) -> anyhow::Result<()> {
         .iter()
         .map(|s| s.to_spec_string())
         .collect();
-    let server = DebugServer::new(config.workspace, cli_lsp_specs, original_args);
+    let server = DebugServer::new(config.workspace().to_path_buf(), cli_lsp_specs, original_args);
+
+    // Start remote listener for debug server too
+    let remote_listener = remote::RemoteListener::new(config.socket_path());
+    remote_listener.start(server.clone());
 
     let service = server.serve(stdio()).await.inspect_err(|e| {
         tracing::error!("debug MCP serve error: {e:?}");
@@ -77,21 +85,26 @@ async fn run_debug_server(config: Config) -> anyhow::Result<()> {
 async fn run_normal_server(config: Config) -> anyhow::Result<()> {
     tracing::info!("programmer-mcp starting");
 
-    std::env::set_current_dir(&config.workspace)?;
+    let workspace = config.workspace().to_path_buf();
+    std::env::set_current_dir(&workspace)?;
 
-    let manager = Arc::new(LspManager::start(&config.lsp_specs, &config.workspace).await?);
-    let message_bus = ipc::HumanMessageBus::start(&config.workspace);
-    let background = BackgroundManager::new(&config.workspace);
+    let manager = Arc::new(LspManager::start(&config.lsp_specs, &workspace).await?);
+    let message_bus = ipc::HumanMessageBus::start(&workspace);
+    let background = BackgroundManager::new(&workspace);
 
     let watcher_manager = manager.clone();
-    let workspace = config.workspace.clone();
+    let watcher_workspace = workspace.clone();
     tokio::spawn(async move {
-        watcher::watch_workspace(watcher_manager, &workspace).await;
+        watcher::watch_workspace(watcher_manager, &watcher_workspace).await;
     });
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     let mcp_server = ProgrammerServer::new(manager.clone(), message_bus, background);
+
+    // Start remote listener for SSH-based sessions
+    let remote_listener = remote::RemoteListener::new(config.socket_path());
+    remote_listener.start(mcp_server.clone());
     let service = mcp_server.serve(stdio()).await.inspect_err(|e| {
         tracing::error!("MCP serve error: {e:?}");
     })?;

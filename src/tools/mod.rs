@@ -15,6 +15,7 @@ use std::sync::Arc;
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+use crate::background::BackgroundManager;
 use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
 
@@ -126,6 +127,55 @@ pub enum Operation {
         /// Language to target a specific LSP server
         language: String,
     },
+    /// Start a named background process
+    StartProcess {
+        /// Unique name for this process
+        name: String,
+        /// Command to run
+        command: String,
+        /// Command arguments
+        #[serde(default)]
+        args: Vec<String>,
+        /// Optional group name (triggers attached to this group auto-activate)
+        group: Option<String>,
+    },
+    /// Stop a background process by name
+    StopProcess {
+        /// Name of the process to stop
+        name: String,
+    },
+    /// Search background process output by name/group and pattern
+    SearchProcessOutput {
+        /// Process name to search (optional if group is set)
+        name: Option<String>,
+        /// Group name to search (optional if name is set)
+        group: Option<String>,
+        /// Substring pattern to search for
+        pattern: String,
+    },
+    /// Define or update a trigger on background process output
+    DefineTrigger {
+        /// Unique trigger name
+        name: String,
+        /// Substring pattern to match
+        pattern: String,
+        /// Lines of context before the match (default 0)
+        #[serde(rename = "linesBefore", default)]
+        lines_before: usize,
+        /// Lines of context after the match (default 5)
+        #[serde(rename = "linesAfter", default = "default_trigger_lines_after")]
+        lines_after: usize,
+        /// Timeout in ms for collecting after-lines (default 3000)
+        #[serde(rename = "timeoutMs", default = "default_trigger_timeout")]
+        timeout_ms: u64,
+        /// Auto-attach to processes started with this group
+        group: Option<String>,
+    },
+    /// Wait for a named trigger to fire
+    AwaitTrigger {
+        /// Trigger name to wait for
+        name: String,
+    },
     /// Block until a human sends a message via the Unix socket IPC.
     /// Use this instead of ending the session when you need human input.
     RequestHumanMessage,
@@ -133,6 +183,14 @@ pub enum Operation {
 
 fn default_max_depth() -> usize {
     3
+}
+
+fn default_trigger_lines_after() -> usize {
+    5
+}
+
+fn default_trigger_timeout() -> u64 {
+    3000
 }
 
 /// Deserialize either a single string or a vec of strings into Vec<String>.
@@ -191,6 +249,7 @@ pub struct OperationResult {
 pub async fn execute_batch(
     manager: &Arc<LspManager>,
     message_bus: &Arc<HumanMessageBus>,
+    background: &Arc<BackgroundManager>,
     operations: Vec<Operation>,
 ) -> Vec<OperationResult> {
     let futures: Vec<_> = operations
@@ -198,7 +257,8 @@ pub async fn execute_batch(
         .map(|op| {
             let manager = manager.clone();
             let bus = message_bus.clone();
-            tokio::spawn(async move { execute_one(&manager, &bus, op).await })
+            let bg = background.clone();
+            tokio::spawn(async move { execute_one(&manager, &bus, bg, op).await })
         })
         .collect();
 
@@ -220,6 +280,7 @@ pub async fn execute_batch(
 async fn execute_one(
     manager: &LspManager,
     message_bus: &HumanMessageBus,
+    background: Arc<BackgroundManager>,
     op: Operation,
 ) -> OperationResult {
     match op {
@@ -362,6 +423,190 @@ async fn execute_one(
                 }
             })
             .await
+        }
+
+        Operation::StartProcess {
+            name,
+            command,
+            args,
+            group,
+        } => {
+            // Start process
+            let result = background
+                .processes
+                .lock()
+                .await
+                .start(name.clone(), group.clone(), &command, &args);
+
+            // If group is set, auto-attach matching triggers
+            if let (Ok(()), Some(ref grp)) = (&result, &group) {
+                let triggers = background.triggers.lock().await;
+                let group_triggers: Vec<_> = triggers
+                    .triggers_for_group(grp)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+                drop(triggers);
+
+                for config in group_triggers {
+                    let bg = background.clone();
+                    let proc_name = name.clone();
+                    tokio::spawn(async move {
+                        run_trigger_scanner(&bg, &proc_name, &config).await;
+                    });
+                }
+            }
+
+            match result {
+                Ok(()) => OperationResult {
+                    operation: "start_process".into(),
+                    success: true,
+                    output: String::new(),
+                },
+                Err(e) => OperationResult {
+                    operation: "start_process".into(),
+                    success: false,
+                    output: e,
+                },
+            }
+        }
+
+        Operation::StopProcess { name } => {
+            match background.processes.lock().await.stop(&name) {
+                Ok(()) => OperationResult {
+                    operation: "stop_process".into(),
+                    success: true,
+                    output: String::new(),
+                },
+                Err(e) => OperationResult {
+                    operation: "stop_process".into(),
+                    success: false,
+                    output: e,
+                },
+            }
+        }
+
+        Operation::SearchProcessOutput {
+            name,
+            group,
+            pattern,
+        } => {
+            let procs = background.processes.lock().await;
+            let results = procs.search_output(name.as_deref(), group.as_deref(), &pattern);
+            let output = if results.is_empty() {
+                "no matches".into()
+            } else {
+                results
+                    .into_iter()
+                    .map(|(proc_name, lines)| {
+                        format!("--- {proc_name} ---\n{}", lines.join("\n"))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            };
+            OperationResult {
+                operation: "search_process_output".into(),
+                success: true,
+                output,
+            }
+        }
+
+        Operation::DefineTrigger {
+            name,
+            pattern,
+            lines_before,
+            lines_after,
+            timeout_ms,
+            group,
+        } => {
+            let config = crate::background::trigger::TriggerConfig {
+                name,
+                pattern,
+                lines_before,
+                lines_after,
+                timeout_ms,
+                group,
+            };
+            match background.triggers.lock().await.define(config) {
+                Ok(()) => OperationResult {
+                    operation: "define_trigger".into(),
+                    success: true,
+                    output: String::new(),
+                },
+                Err(e) => OperationResult {
+                    operation: "define_trigger".into(),
+                    success: false,
+                    output: e,
+                },
+            }
+        }
+
+        Operation::AwaitTrigger { name } => {
+            // Check if already fired
+            {
+                let triggers = background.triggers.lock().await;
+                if let Some(result) = triggers
+                    .pending_results
+                    .iter()
+                    .find(|r| r.trigger_name == name)
+                {
+                    let output = result.to_string();
+                    return OperationResult {
+                        operation: "await_trigger".into(),
+                        success: true,
+                        output,
+                    };
+                }
+            }
+
+            // Get timeout from trigger config
+            let timeout_ms = background
+                .triggers
+                .lock()
+                .await
+                .get(&name)
+                .map(|c| c.timeout_ms)
+                .unwrap_or(30000);
+
+            // Wait for it to fire
+            let mut rx = background.triggers.lock().await.subscribe();
+            let deadline =
+                tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return OperationResult {
+                        operation: "await_trigger".into(),
+                        success: true,
+                        output: format!("trigger '{name}' timed out after {timeout_ms}ms"),
+                    };
+                }
+
+                let timeout = tokio::time::timeout_at(deadline, rx.changed()).await;
+                match timeout {
+                    Ok(Ok(())) => {
+                        let triggers = background.triggers.lock().await;
+                        if let Some(result) = triggers
+                            .pending_results
+                            .iter()
+                            .find(|r| r.trigger_name == name)
+                        {
+                            return OperationResult {
+                                operation: "await_trigger".into(),
+                                success: true,
+                                output: result.to_string(),
+                            };
+                        }
+                    }
+                    _ => {
+                        return OperationResult {
+                            operation: "await_trigger".into(),
+                            success: true,
+                            output: format!("trigger '{name}' timed out after {timeout_ms}ms"),
+                        };
+                    }
+                }
+            }
         }
 
         Operation::RequestHumanMessage => {
@@ -548,5 +793,91 @@ fn format_compact_json(val: &serde_json::Value) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => serde_json::to_string(val).unwrap_or_else(|_| val.to_string()),
+    }
+}
+
+/// Spawn a task that watches a process's output and fires a trigger when the pattern matches.
+async fn run_trigger_scanner(
+    background: &Arc<BackgroundManager>,
+    process_name: &str,
+    config: &crate::background::trigger::TriggerConfig,
+) {
+    let (mut rx, start_line) = {
+        let procs = background.processes.lock().await;
+        let Some(proc) = procs.get(process_name) else {
+            return;
+        };
+        (proc.subscribe(), proc.line_count())
+    };
+
+    let mut checked_up_to = start_line;
+    let pattern = config.pattern.clone();
+    let trigger_name = config.name.clone();
+    let lines_before = config.lines_before;
+    let lines_after = config.lines_after;
+    let timeout_ms = config.timeout_ms;
+
+    loop {
+        // Wait for new output
+        if rx.changed().await.is_err() {
+            return; // process ended
+        }
+
+        let procs = background.processes.lock().await;
+        let Some(proc) = procs.get(process_name) else {
+            return;
+        };
+
+        let new_lines = proc.lines_from(checked_up_to);
+        let current_count = checked_up_to + new_lines.len();
+
+        for (i, line) in new_lines.iter().enumerate() {
+            if line.contains(&pattern) {
+                let match_idx = checked_up_to + i;
+
+                // Gather context before
+                let before_start = match_idx.saturating_sub(lines_before);
+                let all_lines = proc.lines_from(0);
+
+                let mut context: Vec<String> = all_lines
+                    [before_start..=match_idx.min(all_lines.len().saturating_sub(1))]
+                    .to_vec();
+
+                // Need to collect after-lines; drop locks first
+                drop(procs);
+
+                // Wait briefly for after-lines
+                let after_deadline = tokio::time::Instant::now()
+                    + std::time::Duration::from_millis(timeout_ms);
+                let mut collected_after = 0;
+
+                while collected_after < lines_after {
+                    let timeout = tokio::time::timeout_at(after_deadline, rx.changed()).await;
+                    match timeout {
+                        Ok(Ok(())) => {
+                            let procs = background.processes.lock().await;
+                            if let Some(proc) = procs.get(process_name) {
+                                let after_lines = proc.lines_from(match_idx + 1 + collected_after);
+                                context.extend(after_lines.iter().cloned());
+                                collected_after += after_lines.len();
+                            } else {
+                                break;
+                            }
+                        }
+                        _ => break, // timeout
+                    }
+                }
+
+                let result = crate::background::trigger::TriggerResult {
+                    trigger_name: trigger_name.clone(),
+                    matched_line: line.clone(),
+                    context,
+                };
+                background.triggers.lock().await.record_fire(result);
+                return; // trigger fired, done
+            }
+        }
+
+        checked_up_to = current_count;
     }
 }

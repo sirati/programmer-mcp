@@ -45,9 +45,9 @@ impl LspSpec {
 #[derive(Parser, Debug)]
 #[command(name = "programmer-mcp", about = "Multi-LSP MCP server")]
 pub struct Config {
-    /// Path to workspace directory
+    /// Path to workspace directory (not required when --remote is used)
     #[arg(long)]
-    pub workspace: PathBuf,
+    pub workspace: Option<PathBuf>,
 
     /// LSP servers to connect to (format: language:command [args])
     /// Not required when --debug is active.
@@ -58,30 +58,79 @@ pub struct Config {
     /// instead of the normal LSP tools.
     #[arg(long, default_value_t = false)]
     pub debug: bool,
+
+    /// Connect to a remote programmer-mcp instance via SSH.
+    /// Format: [user@]host[:port]
+    #[arg(long)]
+    pub remote: Option<String>,
 }
 
 impl Config {
     pub fn parse_and_validate() -> anyhow::Result<Self> {
         let mut config = Self::parse();
 
-        config.workspace = config.workspace.canonicalize().map_err(|e| {
+        // Remote mode doesn't need workspace or LSP specs
+        if config.remote.is_some() {
+            return Ok(config);
+        }
+
+        let workspace = config
+            .workspace
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--workspace is required (unless using --remote)"))?;
+
+        let canonical = workspace.canonicalize().map_err(|e| {
             anyhow::anyhow!(
                 "workspace directory '{}' not accessible: {e}",
-                config.workspace.display()
+                workspace.display()
             )
         })?;
 
-        if !config.workspace.is_dir() {
+        if !canonical.is_dir() {
             anyhow::bail!(
                 "workspace '{}' is not a directory",
-                config.workspace.display()
+                canonical.display()
             );
         }
+
+        config.workspace = Some(canonical);
 
         if !config.debug && config.lsp_specs.is_empty() {
             anyhow::bail!("at least one --lsp spec is required in normal (non-debug) mode");
         }
 
         Ok(config)
+    }
+
+    /// Get the validated workspace path. Panics if called without workspace.
+    pub fn workspace(&self) -> &std::path::Path {
+        self.workspace.as_deref().expect("workspace must be set")
+    }
+
+    /// Compute the socket directory for remote access: ~/.local/share/programmer-mcp/
+    pub fn socket_dir() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        PathBuf::from(home).join(".local/share/programmer-mcp")
+    }
+
+    /// Compute the socket name for this instance.
+    /// Debug mode → "debug-mcp.sock"
+    /// Normal mode → workspace path with / replaced by _ plus ".sock"
+    pub fn socket_name(&self) -> String {
+        if self.debug {
+            "debug-mcp.sock".to_string()
+        } else {
+            let ws = self.workspace();
+            let encoded = ws
+                .to_string_lossy()
+                .trim_start_matches('/')
+                .replace('/', "_");
+            format!("{encoded}.sock")
+        }
+    }
+
+    /// Full path to the control socket for this instance.
+    pub fn socket_path(&self) -> PathBuf {
+        Self::socket_dir().join(self.socket_name())
     }
 }

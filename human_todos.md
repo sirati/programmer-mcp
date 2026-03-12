@@ -1,38 +1,9 @@
-## Lets not add programming specific code into general lsp code e.g. hover.rs:
-```
-/// Rust keywords/primitives whose long-form docs we want to suppress.
-const KEYWORD_DOCS: &[&str] = &[
-    "struct", "enum", "trait", "impl", "fn", "mod", "use", "pub", "let", "mut", "const",
-    "static", "type", "where", "match", "if", "else", "for", "while", "loop", "return",
-    "async", "await", "move", "ref", "self", "super", "crate", "dyn", "unsafe",
-    "bool", "char", "str", "i8", "i16", "i32", "i64", "i128", "isize",
-    "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64",
-];
-```
+always put language specific code into its own submodule in tools/language_specific/{lang}/ 
 
 
-# lets actually delete the old debug binary file
-not renaming it e.g.
-```
-remote: Resolving deltas: 100% (10/10), done.
-remote: error: Trace: ac3e2c37e5a2f1abc46c087dd5285e2b169d7b6a29daeeacbdb9bebbae35b1f2
-remote: error: See https://gh.io/lfs for more information.
-remote: error: File debug-mcp/programmer-mcp (deleted) is 116.56 MB; this exceeds GitHub's file size limit of 100.00 MB
-remote: error: GH001: Large files detected. You may want to try Git Large File Storage - https://git-lfs.github.com.
-To github.com:sirati/programmer-mcp.git
- ! [remote rejected] main -> main (pre-receive hook declined)
-error: failed to push some refs to 'github.com:sirati/programmer-mcp.git'
-```
 
 
-LSP method+params and returns pretty-printed JSON response
-pretty-printed JSON is too verbose, need something less verbose
-
-lets add a new subcommand to execute: request_human_message (should be used instead of ending the session)
-programmer-mcp on launch created a unix fd socket inside of the project root. if programmer-mcp is launches with -- everything afterwards is the message. via the socket this is communicated to the main programmer-mcp process, next time execute is called, the human request will be appended at the end. if request_human_message was called the mcp does not yield till a request is send via this method
-
-
-please add it so we can do ls (with a set max depth) in symbol definition space
+please add it so we can do ls (with a set max depth) in symbol definition space (partially done)
 
 please add a function that returns or grap-searches the docstring of a symbol (or nothing if there is none)
 
@@ -49,3 +20,35 @@ please add a tool that can starts a background program, other argumetns are the 
 detect if we are starting in an environment where nix is available. if so detech if nix flakes are on. in nix if a lang server is missing we can use nix to run it!
 
 add a new function task it can add a named task (saved in .programmer-mcp/tasks/{name}.json) it should always be set, subtask can be added to task and are saved too, task can be updated, appened to and completed, lsit-task will unless explicitly requested only list uncompleted tasks, list-subtasks does the same based on a task name.
+
+highest priority feature: add a remote feature: when started create a new fd socket inside of ~/.share/programmer-mcp/ 
+if started with --debug it should be named debug-mcp.sock otherwise the name of the current project with path  .sock
+now we have a new --remote {user@host:port} (user and port part are optional), if called it should use ssh to connect to the remote host and check ~/.share/programmer-mcp/ if started with --debug it takes the debug one, otherwise it if there are multiple (excluding debug) it should ask on the first command, remember the command, and after connection execute the queued command 
+the connection works by asking to establish a session by sending a random string to the socket. the server will then create a new fd socket inside of ~/.share/programmer-mcp/{project_name with path/debug}.session-{rnd sessionstr}-in/out.sock, the client should now forward these sockets via ssh, and connect to them, all input / output is forwarded to and from the socket. for this forwarding logic look at /src/debug/proxy.rs for reference, shared code should be extracted into a separate module. the bigger change this requires is that now the code has to be able to handle multiple sessions simultaneously: the regular stdio one and the one established via ssh. 
+
+
+{
+  "method": "tools/call",
+  "params": {
+    "name": "execute",
+    "arguments": {
+      "filePath": "src/debug/relay.rs",
+      "operations": [
+        {
+          "operation": "body",
+          "symbolNames": [
+            "RelayChannel",
+            "RelayChannel.relay",
+            "RelayChannel.ensure_initialized"
+          ]
+        }
+      ]
+    }
+  }
+}
+---
+RelayChannel.relay not found
+---
+Channel.ensure_initialized not found
+
+we need to be able to deal with such confusing ai input, first look for the parent symbol and of it the child, if not these the child fuzzy, if not there again with parent fuzzy, if not there only the child, if not there only the child fuzzy
