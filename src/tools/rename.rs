@@ -125,7 +125,7 @@ pub async fn rename_symbol(
     ))
 }
 
-fn apply_workspace_edit(edit: &lsp_types::WorkspaceEdit) -> Result<(), LspClientError> {
+pub fn apply_workspace_edit(edit: &lsp_types::WorkspaceEdit) -> Result<(), LspClientError> {
     if let Some(changes) = &edit.changes {
         for (uri, edits) in changes {
             apply_text_edits(uri, edits)?;
@@ -160,7 +160,7 @@ fn apply_workspace_edit(edit: &lsp_types::WorkspaceEdit) -> Result<(), LspClient
     Ok(())
 }
 
-fn apply_text_edits(uri: &Uri, edits: &[TextEdit]) -> Result<(), LspClientError> {
+pub fn apply_text_edits(uri: &Uri, edits: &[TextEdit]) -> Result<(), LspClientError> {
     let path = uri_to_path(uri).ok_or_else(|| LspClientError::Other("invalid URI".into()))?;
 
     let content = std::fs::read_to_string(&path)

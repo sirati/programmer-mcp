@@ -6,10 +6,15 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 use crate::lsp::manager::LspManager;
+use crate::tools::diagnostics_cache::{format_diagnostics_for_cache, DiagnosticsCache};
 use crate::tools::formatting::path_to_uri;
 
-/// Watch workspace for file changes and notify LSP servers.
-pub async fn watch_workspace(manager: Arc<LspManager>, workspace: &Path) {
+/// Watch workspace for file changes, notify LSP servers, and auto-collect diagnostics.
+pub async fn watch_workspace(
+    manager: Arc<LspManager>,
+    diag_cache: Arc<DiagnosticsCache>,
+    workspace: &Path,
+) {
     let (tx, mut rx) = mpsc::channel::<Event>(256);
 
     let mut watcher = match notify::recommended_watcher(move |res: Result<Event, _>| {
@@ -58,27 +63,68 @@ pub async fn watch_workspace(manager: Arc<LspManager>, workspace: &Path) {
 
                 debug!(count = changes.len(), "file change events");
 
-                for client in manager.all() {
-                    if let Err(e) = client.did_change_watched_files(changes.clone()).await {
-                        debug!(lsp = %client.language(), "watched files notification failed: {e}");
-                    }
-
-                    for change in &changes {
-                        if change.typ == lsp_types::FileChangeType::CHANGED {
-                            let uri_str = change.uri.as_str();
-                            if let Some(path) = uri_str.strip_prefix("file://") {
-                                if let Err(e) = client.notify_file_changed(path).await {
-                                    debug!(lsp = %client.language(), path, "file change notify failed: {e}");
-                                }
-                            }
-                        }
-                    }
-                }
+                notify_and_collect(&manager, &diag_cache, &changes).await;
             }
             _ => {}
         }
     }
 
-    // Keep watcher alive
     drop(watcher);
+}
+
+async fn notify_and_collect(
+    manager: &Arc<LspManager>,
+    diag_cache: &Arc<DiagnosticsCache>,
+    changes: &[lsp_types::FileEvent],
+) {
+    // Notify LSP servers of file changes
+    for client in manager.all() {
+        if let Err(e) = client.did_change_watched_files(changes.to_vec()).await {
+            debug!(lsp = %client.language(), "watched files notification failed: {e}");
+        }
+        for change in changes {
+            if change.typ == lsp_types::FileChangeType::CHANGED {
+                let uri_str = change.uri.as_str();
+                if let Some(path) = uri_str.strip_prefix("file://") {
+                    if let Err(e) = client.notify_file_changed(path).await {
+                        debug!(lsp = %client.language(), path, "file change notify failed: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    // Schedule delayed diagnostics collection for changed files
+    let changed_paths: Vec<String> = changes
+        .iter()
+        .filter(|c| c.typ != lsp_types::FileChangeType::DELETED)
+        .filter_map(|c| c.uri.as_str().strip_prefix("file://").map(String::from))
+        .collect();
+
+    if changed_paths.is_empty() {
+        return;
+    }
+
+    let mgr = manager.clone();
+    let cache = diag_cache.clone();
+    tokio::spawn(async move {
+        // Wait for LSP to process the changes
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        collect_diagnostics(&mgr, &cache, &changed_paths).await;
+    });
+}
+
+async fn collect_diagnostics(manager: &LspManager, cache: &DiagnosticsCache, paths: &[String]) {
+    for path in paths {
+        let clients = manager.resolve(None, Some(path));
+        for client in clients {
+            let uri = match path_to_uri(path) {
+                Ok(u) => u,
+                Err(_) => continue,
+            };
+            let diagnostics = client.get_cached_diagnostics(&uri).await;
+            let formatted = format_diagnostics_for_cache(path, &diagnostics);
+            cache.update(path, formatted).await;
+        }
+    }
 }

@@ -157,3 +157,97 @@ pub fn handle_impls(ops: &mut Vec<Operation>, args: &str) {
         });
     }
 }
+
+/// `code_actions <file> <line> <col>` or `code_actions <line> <col>` (uses cd_file)
+pub fn handle_code_actions(
+    ops: &mut Vec<Operation>,
+    args: &str,
+    cd_dir: &Path,
+    cd_file: Option<&Path>,
+) {
+    let (file, line, column) = match parse_file_line_col(args, cd_dir, cd_file) {
+        Some(v) => v,
+        None => return,
+    };
+    ops.push(Operation::CodeActions {
+        file_path: file,
+        line,
+        column,
+        language: None,
+    });
+}
+
+/// `apply_action <file> <line> <col> <index>` or `apply_action <line> <col> <index>`
+pub fn handle_apply_action(
+    ops: &mut Vec<Operation>,
+    args: &str,
+    cd_dir: &Path,
+    cd_file: Option<&Path>,
+) {
+    let parts: Vec<&str> = args.split_whitespace().collect();
+    let (file, line_str, col_str, idx_str) = if parts.len() >= 4 {
+        (resolve_file(cd_dir, parts[0]), parts[1], parts[2], parts[3])
+    } else if parts.len() == 3 {
+        let Some(f) = cd_file else { return };
+        (f.display().to_string(), parts[0], parts[1], parts[2])
+    } else {
+        return;
+    };
+    let Ok(line) = line_str.parse::<u32>() else {
+        return;
+    };
+    let Ok(column) = col_str.parse::<u32>() else {
+        return;
+    };
+    let Ok(index) = idx_str.parse::<usize>() else {
+        return;
+    };
+    ops.push(Operation::ApplyCodeAction {
+        file_path: file,
+        line,
+        column,
+        index,
+        language: None,
+    });
+}
+
+/// `format [files]` or bare `format` (uses cd_file)
+pub fn handle_format(ops: &mut Vec<Operation>, args: &str, cd_dir: &Path, cd_file: Option<&Path>) {
+    if args.trim().is_empty() {
+        if let Some(f) = cd_file {
+            ops.push(Operation::Format {
+                file_path: f.display().to_string(),
+                language: None,
+            });
+        }
+        return;
+    }
+    for item in parse_item_list(args) {
+        if let Some(path) = resolve_list_item(&item, cd_dir, cd_file) {
+            ops.push(Operation::Format {
+                file_path: path,
+                language: None,
+            });
+        }
+    }
+}
+
+/// Shared helper: parse `<file> <line> <col>` or `<line> <col>` from args.
+fn parse_file_line_col(
+    args: &str,
+    cd_dir: &Path,
+    cd_file: Option<&Path>,
+) -> Option<(String, u32, u32)> {
+    let parts: Vec<&str> = args.split_whitespace().collect();
+    let (file, line_str, col_str) = if parts.len() >= 3 {
+        (resolve_file(cd_dir, parts[0]), parts[1], parts[2])
+    } else if parts.len() == 2 {
+        let f = cd_file?;
+        (f.display().to_string(), parts[0], parts[1])
+    } else {
+        return None;
+    };
+    let line = line_str.parse::<u32>().ok()?;
+    let column = col_str.parse::<u32>().ok()?;
+    Some((file, line, column))
+}

@@ -134,3 +134,23 @@ please add support so that subproject / workspaces inside of folders of the main
 we should expose refactor commands that lsp support 
 
 test with other language servers than just rust.
+
+list_symbols when done on a folder should act like ls
+
+
+
+src/lsp/client/mod.rs:120:13: warning: use of deprecated field `lsp_types::InitializeParams::root_path`: Use `root_uri` instead when possible
+src/lsp/client/mod.rs:164:25: warning: unused import: `futures::StreamExt`
+src/background/process.rs:32:12: warning: method `tail` is never used
+src/background/process.rs:174:12: warning: method `list` is never used
+src/background/trigger.rs:39:9: warning: field `matched_line` is never read
+src/background/trigger.rs:136:12: warning: methods `has_fired` and `list` are never used
+src/ipc.rs:86:12: warning: method `socket_path` is never used
+src/lsp/client/requests.rs:19:9: warning: field `command` is never read
+src/lsp/client/requests.rs:58:18: warning: method `goto_definition` is never used
+src/lsp/detect_lang.rs:56:8: warning: function `language_extensions` is never used
+src/relay.rs:101:12: warning: method `is_initialized` is never used
+src/tools/exec_helpers.rs:15:14: warning: function `execute_on_clients` is never used
+src/tools/formatting.rs:49:8: warning: function `extract_text_from_location` is never used
+src/tools/formatting.rs:161:8: warning: function `format_location` is never used
+lets fix these warnings, probably also means that e.g. triggers are not completely implemented!

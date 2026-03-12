@@ -48,13 +48,23 @@ pub fn start_ssh_forward(
 
     debug!(args = ?args, "starting SSH tunnel");
 
-    let child = Command::new("ssh")
-        .args(&args)
+    let mut cmd = Command::new("ssh");
+    cmd.args(&args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
+        .kill_on_drop(true);
+
+    // Ensure SSH child dies when parent exits (even via SIGKILL).
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
+
+    let child = cmd.spawn()?;
 
     Ok(child)
 }

@@ -143,7 +143,13 @@ impl DslContext {
             "define_trigger" => handle_define_trigger(ops, args),
             "await_trigger" => handle_await_trigger(ops, args),
 
+            // refactoring
+            "code_actions" => handle_code_actions(ops, args, &self.cd_dir, self.cd_file.as_deref()),
+            "apply_action" => handle_apply_action(ops, args, &self.cd_dir, self.cd_file.as_deref()),
+            "format" => handle_format(ops, args, &self.cd_dir, self.cd_file.as_deref()),
+
             // misc
+            "workspace_info" => ops.push(Operation::WorkspaceInfo),
             "request_human_message" => ops.push(Operation::RequestHumanMessage),
 
             // unknown → silently skip (forward-compat)

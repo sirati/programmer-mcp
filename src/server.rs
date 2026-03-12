@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::{
@@ -9,6 +10,7 @@ use rmcp::{
 use crate::background::BackgroundManager;
 use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
+use crate::tools::diagnostics_cache::DiagnosticsCache;
 use crate::tools::{self, OperationResult};
 
 /// The batch request: a DSL script of commands to execute.
@@ -53,7 +55,13 @@ pub struct ExecuteRequest {
     ///   define_trigger <name> <pattern> [before=N] [after=N] [timeout=N] [group=g]
     ///   await_trigger <name>
     ///
+    /// Refactoring:
+    ///   code_actions <file> <line> <col>   — list available code actions
+    ///   apply_action <file> <line> <col> <index> — apply a code action by index
+    ///   format [files]                     — format files
+    ///
     /// Misc:
+    ///   workspace_info                     — show subprojects and standalone files
     ///   request_human_message
     pub commands: String,
 }
@@ -63,6 +71,8 @@ pub struct ProgrammerServer {
     manager: Arc<LspManager>,
     message_bus: Arc<HumanMessageBus>,
     background: Arc<BackgroundManager>,
+    workspace_root: PathBuf,
+    diag_cache: Arc<DiagnosticsCache>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -72,11 +82,15 @@ impl ProgrammerServer {
         manager: Arc<LspManager>,
         message_bus: Arc<HumanMessageBus>,
         background: Arc<BackgroundManager>,
+        workspace_root: PathBuf,
+        diag_cache: Arc<DiagnosticsCache>,
     ) -> Self {
         Self {
             manager,
             message_bus,
             background,
+            workspace_root,
+            diag_cache,
             tool_router: Self::tool_router(),
         }
     }
@@ -121,7 +135,14 @@ impl ProgrammerServer {
           search_output myproc error\n\
           define_trigger t error [before=3] [after=5] [timeout=30000] [group=build]\n\
           await_trigger t\n\n\
+        REFACTORING:\n\
+          code_actions src/main.rs 42 10    # list available actions\n\
+          code_actions 42 10                # uses current cd file\n\
+          apply_action src/main.rs 42 10 0  # apply action by index\n\
+          format src/main.rs                # format a file\n\
+          format                            # format current cd file\n\n\
         MISC:\n\
+          workspace_info                    # show subprojects & standalone files\n\
           request_human_message"
     )]
     async fn execute(
@@ -133,12 +154,19 @@ impl ProgrammerServer {
             &self.manager,
             &self.message_bus,
             &self.background,
+            &self.workspace_root,
             operations,
         )
         .await;
 
         let mut output = format_results(&results);
         let any_error = results.iter().any(|r| !r.success);
+
+        // Append any pending auto-diagnostics
+        let pending_diags = self.diag_cache.take_pending().await;
+        for diag in &pending_diags {
+            output.push_str(&format!("\n\n{diag}"));
+        }
 
         // Append any pending trigger results
         let pending_triggers = self.background.triggers.lock().await.take_pending();

@@ -1,8 +1,11 @@
+pub mod code_actions;
 pub mod definition;
 pub mod diagnostics;
+pub mod diagnostics_cache;
 pub mod dsl;
 pub mod exec_helpers;
 pub mod execute;
+mod execute_lsp;
 pub mod formatting;
 pub mod hover;
 pub mod impls;
@@ -12,11 +15,13 @@ pub mod operation;
 pub mod process_ops;
 pub mod references;
 pub mod rename;
+pub mod serde_helpers;
 pub mod symbol_info;
 pub mod symbol_list;
 pub mod symbol_match;
 pub mod symbol_search;
 pub mod task_ops;
+pub mod workspace;
 
 pub use execute::execute_batch;
 pub use operation::{Operation, OperationResult};

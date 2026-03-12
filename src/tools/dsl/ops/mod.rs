@@ -10,8 +10,9 @@ pub mod process;
 pub mod task;
 
 pub use lsp::{
-    handle_body, handle_definition, handle_diagnostics, handle_docstring, handle_hover,
-    handle_impls, handle_list_symbols, handle_references, handle_rename_symbol,
+    handle_apply_action, handle_body, handle_code_actions, handle_definition, handle_diagnostics,
+    handle_docstring, handle_format, handle_hover, handle_impls, handle_list_symbols,
+    handle_references, handle_rename_symbol,
 };
 pub use process::{
     handle_await_trigger, handle_define_trigger, handle_search_output, handle_start_process,

@@ -2,13 +2,22 @@
 
 use jsonrpsee::core::client::ClientT;
 use lsp_types::{
-    request::*, DocumentDiagnosticParams, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, Location, Position,
+    request::*, CodeActionContext, CodeActionOrCommand, CodeActionParams, DocumentDiagnosticParams,
+    DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FormattingOptions,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, Location, Position, Range,
     ReferenceContext, ReferenceParams, RenameParams, SymbolInformation, TextDocumentIdentifier,
-    TextDocumentPositionParams, Uri, WorkspaceEdit, WorkspaceSymbolParams,
+    TextDocumentPositionParams, TextEdit, Uri, WorkspaceEdit, WorkspaceSymbolParams,
 };
 
 use super::{LspClient, LspClientError, RpcParams};
+
+/// Simplified code action info returned to the tools layer.
+pub struct CodeActionInfo {
+    pub title: String,
+    pub kind: Option<String>,
+    pub edit: Option<WorkspaceEdit>,
+    pub command: Option<lsp_types::Command>,
+}
 
 impl LspClient {
     pub async fn workspace_symbol(
@@ -158,6 +167,73 @@ impl LspClient {
         };
 
         Ok(())
+    }
+
+    /// Get available code actions at a position.
+    pub async fn code_actions(
+        &self,
+        file_path: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<CodeActionInfo>, LspClientError> {
+        let uri =
+            crate::tools::formatting::path_to_uri(file_path).map_err(LspClientError::Other)?;
+        let pos = Position::new(line.saturating_sub(1), column.saturating_sub(1));
+        let range = Range::new(pos, pos);
+        let diagnostics = self.get_cached_diagnostics(&uri).await;
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier { uri },
+            range,
+            context: CodeActionContext {
+                diagnostics,
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let result: Option<Vec<CodeActionOrCommand>> = self
+            .rpc
+            .request(CodeActionRequest::METHOD, RpcParams(params))
+            .await?;
+        Ok(result
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|a| match a {
+                CodeActionOrCommand::CodeAction(ca) => Some(CodeActionInfo {
+                    title: ca.title,
+                    kind: ca.kind.map(|k| k.as_str().to_string()),
+                    edit: ca.edit,
+                    command: ca.command,
+                }),
+                CodeActionOrCommand::Command(cmd) => Some(CodeActionInfo {
+                    title: cmd.title.clone(),
+                    kind: None,
+                    edit: None,
+                    command: Some(cmd),
+                }),
+            })
+            .collect())
+    }
+
+    /// Format a document, returning the text edits (caller applies them).
+    pub async fn format_raw(&self, file_path: &str) -> Result<Vec<TextEdit>, LspClientError> {
+        let uri =
+            crate::tools::formatting::path_to_uri(file_path).map_err(LspClientError::Other)?;
+        let params = DocumentFormattingParams {
+            text_document: TextDocumentIdentifier { uri },
+            options: FormattingOptions {
+                tab_size: 4,
+                insert_spaces: true,
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+        };
+        let result: Option<Vec<TextEdit>> = self
+            .rpc
+            .request(Formatting::METHOD, RpcParams(params))
+            .await?;
+        Ok(result.unwrap_or_default())
     }
 
     /// Send an arbitrary LSP request and return the raw JSON response.

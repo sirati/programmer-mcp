@@ -152,15 +152,24 @@ async fn run_normal_server(config: Config) -> anyhow::Result<()> {
     let message_bus = ipc::HumanMessageBus::start(&workspace);
     let background = BackgroundManager::new(&workspace);
 
+    let diag_cache = tools::diagnostics_cache::DiagnosticsCache::new(&workspace);
+
     let watcher_manager = manager.clone();
+    let watcher_cache = diag_cache.clone();
     let watcher_workspace = workspace.clone();
     tokio::spawn(async move {
-        watcher::watch_workspace(watcher_manager, &watcher_workspace).await;
+        watcher::watch_workspace(watcher_manager, watcher_cache, &watcher_workspace).await;
     });
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let mcp_server = ProgrammerServer::new(manager.clone(), message_bus, background);
+    let mcp_server = ProgrammerServer::new(
+        manager.clone(),
+        message_bus,
+        background,
+        workspace.clone(),
+        diag_cache,
+    );
 
     // Start remote listener for SSH-based sessions
     let remote_listener = remote::RemoteListener::new(config.socket_path());

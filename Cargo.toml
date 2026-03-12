@@ -23,3 +23,6 @@ async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 tempfile = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
