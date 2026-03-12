@@ -10,6 +10,7 @@ use crate::background::BackgroundManager;
 use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
 
+use super::edit::{self, PendingEdits};
 use super::execute_lsp;
 use super::operation::{Operation, OperationResult};
 use super::{grep, list_dir, process_ops, read_file, task_ops, workspace};
@@ -21,6 +22,7 @@ pub async fn execute_batch(
     background: &Arc<BackgroundManager>,
     workspace_root: &Path,
     operations: Vec<Operation>,
+    pending_edits: &PendingEdits,
 ) -> Vec<OperationResult> {
     let futures: Vec<_> = operations
         .into_iter()
@@ -29,7 +31,8 @@ pub async fn execute_batch(
             let bus = message_bus.clone();
             let bg = background.clone();
             let ws = workspace_root.to_path_buf();
-            tokio::spawn(async move { execute_one(&manager, &bus, bg, &ws, op).await })
+            let pe = pending_edits.clone();
+            tokio::spawn(async move { execute_one(&manager, &bus, bg, &ws, op, &pe).await })
         })
         .collect();
 
@@ -54,6 +57,7 @@ async fn execute_one(
     background: Arc<BackgroundManager>,
     workspace_root: &Path,
     op: Operation,
+    pending_edits: &PendingEdits,
 ) -> OperationResult {
     match &op {
         // LSP: symbol-based
@@ -134,6 +138,82 @@ async fn execute_one(
                 success: true,
                 output,
             }
+        }
+
+        // Edit operations (need LSP + pending edits)
+        Operation::Edit {
+            edit_types,
+            path,
+            symbol_name,
+            new_content,
+            search_dir,
+        } => {
+            use super::edit::EditType;
+            use super::exec_helpers::execute_on_first;
+
+            let parsed_types: Vec<EditType> = edit_types
+                .iter()
+                .filter_map(|t| EditType::from_str(t))
+                .collect();
+
+            // File-only edits don't need LSP
+            if parsed_types.len() == 1 && parsed_types[0] == EditType::File {
+                match edit::execute_edit_no_lsp(
+                    &parsed_types,
+                    path,
+                    symbol_name,
+                    new_content,
+                    pending_edits,
+                )
+                .await
+                {
+                    Ok(output) => OperationResult {
+                        operation: "edit".into(),
+                        success: true,
+                        output,
+                    },
+                    Err(e) => OperationResult {
+                        operation: "edit".into(),
+                        success: false,
+                        output: format!("edit failed: {e}"),
+                    },
+                }
+            } else {
+                let clients = manager.resolve(None, Some(path));
+                let pe = pending_edits.clone();
+                execute_on_first("edit", clients, |client| {
+                    let types = parsed_types.clone();
+                    let p = path.clone();
+                    let sym = symbol_name.clone();
+                    let content = new_content.clone();
+                    let sd = search_dir.clone();
+                    let pe = pe.clone();
+                    async move {
+                        edit::execute_edit(&client, &types, &p, &sym, &content, sd.as_deref(), &pe)
+                            .await
+                    }
+                })
+                .await
+            }
+        }
+
+        Operation::ApplyEdit {
+            edit_id,
+            path,
+            symbol_name,
+        } => {
+            use super::exec_helpers::execute_on_first;
+
+            let clients = manager.resolve(None, Some(path));
+            let pe = pending_edits.clone();
+            execute_on_first("apply_edit", clients, |client| {
+                let id = edit_id.clone();
+                let p = path.clone();
+                let sym = symbol_name.clone();
+                let pe = pe.clone();
+                async move { edit::apply_pending_edit(&client, &id, &p, &sym, &pe).await }
+            })
+            .await
         }
 
         // Process / trigger operations

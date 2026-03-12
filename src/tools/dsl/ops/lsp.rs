@@ -184,6 +184,16 @@ pub fn handle_symbol_cmd(
             language: None,
             search_dir,
         },
+        "callers" => Operation::Callers {
+            symbol_names: syms,
+            language: None,
+            search_dir,
+        },
+        "callees" => Operation::Callees {
+            symbol_names: syms,
+            language: None,
+            search_dir,
+        },
         _ => return,
     };
     ops.push(op);

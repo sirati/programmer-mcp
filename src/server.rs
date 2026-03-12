@@ -11,6 +11,7 @@ use crate::background::BackgroundManager;
 use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
 use crate::tools::diagnostics_cache::DiagnosticsCache;
+use crate::tools::edit::PendingEdits;
 use crate::tools::{self, OperationResult};
 
 /// The batch request: a DSL script of commands to execute.
@@ -36,6 +37,8 @@ pub struct ExecuteRequest {
     ///   references  [sym1 sym2]   — all usages
     ///   docstring   [sym1 sym2]   — doc comments
     ///   impls       [sym1 sym2]   — impl blocks (Rust)
+    ///   callers     [sym1 sym2]   — find callers (incoming calls)
+    ///   callees     [sym1 sym2]   — find callees (outgoing calls)
     ///
     /// Item lists: [a, b, tools/{mod.rs x.rs}] — commas/spaces as separators,
     /// brace expansion: tools/{mod.rs x.rs} → tools/mod.rs, tools/x.rs
@@ -79,6 +82,8 @@ pub struct ProgrammerServer {
     background: Arc<BackgroundManager>,
     workspace_root: PathBuf,
     diag_cache: Arc<DiagnosticsCache>,
+    pending_edits: PendingEdits,
+    allow_file_edit: bool,
     tool_router: ToolRouter<Self>,
 }
 
@@ -90,6 +95,7 @@ impl ProgrammerServer {
         background: Arc<BackgroundManager>,
         workspace_root: PathBuf,
         diag_cache: Arc<DiagnosticsCache>,
+        allow_file_edit: bool,
     ) -> Self {
         Self {
             manager,
@@ -97,6 +103,8 @@ impl ProgrammerServer {
             background,
             workspace_root,
             diag_cache,
+            pending_edits: crate::tools::edit::new_pending_edits(),
+            allow_file_edit,
             tool_router: Self::tool_router(),
         }
     }
@@ -143,6 +151,12 @@ impl ProgrammerServer {
           search_output myproc error\n\
           define_trigger t error [before=3] [after=5] [timeout=30000] [group=build]\n\
           await_trigger t\n\n\
+        EDITING:\n\
+          edit body path/file.rs symbol_name <new content>\n\
+          edit signature path/file.rs symbol_name <new sig>\n\
+          edit docs path/file.rs symbol_name <new docs>\n\
+          edit body,docs path/file.rs sym <content>  # multiple types\n\
+          apply_edit <id> path/file.rs symbol_name   # after disambiguation\n\n\
         REFACTORING:\n\
           code_actions src/main.rs 42 10    # list available actions\n\
           code_actions 42 10                # uses current cd file\n\
@@ -157,13 +171,17 @@ impl ProgrammerServer {
         &self,
         Parameters(request): Parameters<ExecuteRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let parsed = tools::dsl::parse_dsl(&request.commands);
+        let dsl_opts = tools::dsl::DslOptions {
+            allow_file_edit: self.allow_file_edit,
+        };
+        let parsed = tools::dsl::parse_dsl_with_options(&request.commands, &dsl_opts);
         let results = tools::execute_batch(
             &self.manager,
             &self.message_bus,
             &self.background,
             &self.workspace_root,
             parsed.operations,
+            &self.pending_edits,
         )
         .await;
 

@@ -225,3 +225,87 @@ lists like those exist i think more than four times in the codebase. extract suc
 
 
 i have noticed that .cache has both files named after something resembling the file structure, (i think its better if we actually build a parallel folder structure) further there are also files outside of diagnostics that have hex as their name. neither files contain the actual diagnostic, just the hash. idk why there are two types of files. anyway for it to be a cache we need to store the warnings and errors in a rich format.
+
+
+
+if you have already added general file editing functionality please put behind a config flag that default to false (when off even the help does not include this option)
+
+what you please can include instead is a new edit command that works like this:
+edit [operation type = file/body/signature/docs this can be a list e.g. signature body] path_to_file symbol_quantifier new_content
+for this its important that if the path and symbol cannot be resolved, we do NOT fallback on fuzzy search, instead we use fuzzy search to find candidates and answer with
+edit to path_to_file symbol_quantifier failed
+did you mean:
+1. path_option1 symbol_option1
+2. path_option2 symbol_option2
+to apply edit do
+apply_edit {short unique identifier} correct_path correct_symbol
+apply_edit fails the same way if again incorrect
+
+on a correct edit the reply should be
+applied edit [types] correct_path correct_symbol -> diff:
+```diff
+{diff of edit}
+```
+editing should be robust against \n\r stuff and indention i.e. take the indention if the first line of the new content and change indention of whole section as if the indention was at 0 there. also when counting indention identify if it is tab / 1 space / 2 spaces / 3 / 4 ...
+you do the same for the to be edited content
+then you apply the new-line and indention style to the to be inserted content, you indent the whole thing to the same level as the first line of the to be edited conent and then you insert it
+
+
+
+whenever the command includes only on command excluding cd from count, the last like of the response should be: Please always batch multiple commands together.
+
+
+
+```rust
+impl IndentStyle {
+    /// Produce a single indent level in this style.
+    pub fn unit(&self) -> &str {
+        match self {
+            IndentStyle::Tabs => "\t",
+            IndentStyle::Spaces(2) => "  ",
+            IndentStyle::Spaces(4) => "    ",
+            IndentStyle::Spaces(8) => "        ",
+            _ => "    ", // fallback
+        }
+    }
+}
+```
+we must support all possible IndentStyle even insane ones like 17 spaces
+
+
+{
+  "commands": "edit body src/tools/indent.rs gcd_u32 fn gcd_u32(mut a: u32, mut b: u32) -> u32 {\\n    while b != 0 {\\n        let t = b;\\n        b = a % b;\\n        a = t;\\n    }\\n    a\\n}"
+}
+- fn gcd_u32(a: u32, b: u32) -> u32 {
+-     if b == 0 {
+-         a
+-     } else {
+-         gcd_u32(b, a % b)
+-     }
+- }
++ fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
++     while b != 0 {
++         let t = b;
++         b = a % b;
++         a = t;
++     }
++     a
++ }
+can we try to use a better diff algorithm? like this would be nicer:
+- fn gcd_u32(a: u32, b: u32) -> u32 {
++ fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
+-     if b == 0 {
+-         a
+-     } else {
+-         gcd_u32(b, a % b)
++     while b != 0 {
++         let t = b;
++         b = a % b;
++         a = t;
+     }
++     a
+}
+another issue here is the edit was called with body but was able to edit the signature it should have been called with [body signature], we can have heuristics to detect this mistake, but in that care we should fail like this:
+detected a signature at the start of a body only edit! please use `edit [body signature] ...` in the future. to apply edit:
+apply_edit {short unique identifier e.g. three random words separated by _} [body signature] 
+

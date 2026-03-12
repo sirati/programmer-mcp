@@ -3,10 +3,10 @@
 use std::fmt::Write;
 use std::sync::Arc;
 
-use lsp_types::Position;
+use lsp_types::{CallHierarchyItem, Position};
 
 use crate::lsp::client::{LspClient, LspClientError};
-use crate::tools::formatting::{path_to_uri, uri_to_path};
+use crate::tools::formatting::uri_to_path;
 use crate::tools::symbol_search::find_symbol_with_fallback;
 
 /// Find all callers of a symbol.
@@ -30,15 +30,7 @@ pub async fn callers(
         }
         writeln!(out, "Callers of {name}:").ok();
         for call in &calls {
-            let from = &call.from;
-            let file = uri_to_path(&from.uri).unwrap_or_else(|| from.uri.as_str().to_string());
-            let line = from.selection_range.start.line + 1;
-            let detail = from.detail.as_deref().unwrap_or("");
-            if detail.is_empty() {
-                writeln!(out, "  {} ({}:L{})", from.name, file, line).ok();
-            } else {
-                writeln!(out, "  {} — {} ({}:L{})", from.name, detail, file, line).ok();
-            }
+            format_item(&mut out, &call.from);
         }
     }
 
@@ -66,19 +58,42 @@ pub async fn callees(
         }
         writeln!(out, "Callees of {name}:").ok();
         for call in &calls {
-            let to = &call.to;
-            let file = uri_to_path(&to.uri).unwrap_or_else(|| to.uri.as_str().to_string());
-            let line = to.selection_range.start.line + 1;
-            let detail = to.detail.as_deref().unwrap_or("");
-            if detail.is_empty() {
-                writeln!(out, "  {} ({}:L{})", to.name, file, line).ok();
-            } else {
-                writeln!(out, "  {} — {} ({}:L{})", to.name, detail, file, line).ok();
-            }
+            format_item(&mut out, &call.to);
         }
     }
 
     Ok(out.trim_end().to_string())
+}
+
+/// Format a CallHierarchyItem as a concise line.
+fn format_item(out: &mut String, item: &CallHierarchyItem) {
+    let file = uri_to_path(&item.uri).unwrap_or_else(|| item.uri.as_str().to_string());
+    let line = item.selection_range.start.line + 1;
+
+    // Use short form for external/stdlib paths
+    let location = if is_external(&file) {
+        format!("(external)")
+    } else {
+        format!("({}:L{})", file, line)
+    };
+
+    if let Some(detail) = &item.detail {
+        if !detail.is_empty() {
+            // Show first line of detail only
+            let short = detail.lines().next().unwrap_or(detail);
+            writeln!(out, "  {} — {} {}", item.name, short, location).ok();
+            return;
+        }
+    }
+    writeln!(out, "  {} {}", item.name, location).ok();
+}
+
+/// Check if a path is external (stdlib, cargo registry, nix store, etc.)
+fn is_external(path: &str) -> bool {
+    path.contains("/.cargo/registry/")
+        || path.contains("/rustlib/src/")
+        || path.contains("/nix/store/")
+        || path.starts_with("/usr/")
 }
 
 /// Resolve a symbol name to a CallHierarchyItem via find_symbol_with_fallback + prepare.
@@ -86,13 +101,12 @@ async fn prepare_from_symbol(
     client: &Arc<LspClient>,
     name: &str,
     search_dir: Option<&str>,
-) -> Result<Vec<lsp_types::CallHierarchyItem>, LspClientError> {
+) -> Result<Vec<CallHierarchyItem>, LspClientError> {
     let symbols = find_symbol_with_fallback(client, name, search_dir).await?;
     if symbols.is_empty() {
         return Ok(vec![]);
     }
 
-    // Use the first match
     let sym = &symbols[0];
     let uri = &sym.location.uri;
     let pos = Position {
@@ -100,7 +114,6 @@ async fn prepare_from_symbol(
         character: sym.location.range.start.character,
     };
 
-    // Ensure file is open
     if let Some(path) = uri_to_path(uri) {
         let _ = client.open_file(&path).await;
     }

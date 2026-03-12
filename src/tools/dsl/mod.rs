@@ -82,15 +82,30 @@ pub struct ParseResult {
     pub warnings: Vec<String>,
 }
 
+/// Options for DSL parsing.
+#[derive(Default, Clone)]
+pub struct DslOptions {
+    /// Whether `edit file` is allowed.
+    pub allow_file_edit: bool,
+}
+
 /// Parse a DSL command script into a list of operations.
 ///
 /// Lines are processed in order. `cd` commands update the current path
 /// context used by subsequent file-based operations.
 /// All operations are collected and returned for concurrent execution.
 pub fn parse_dsl(commands: &str) -> ParseResult {
+    parse_dsl_with_options(commands, &DslOptions::default())
+}
+
+/// Parse with explicit options (e.g. allow_file_edit flag).
+pub fn parse_dsl_with_options(commands: &str, options: &DslOptions) -> ParseResult {
     let mut ops = Vec::new();
     let mut warnings = Vec::new();
-    let mut ctx = DslContext::default();
+    let mut ctx = DslContext {
+        allow_file_edit: options.allow_file_edit,
+        ..Default::default()
+    };
 
     for raw_line in commands.lines() {
         // Support `|` as an inline command separator
@@ -118,6 +133,8 @@ struct DslContext {
     cd_dir: PathBuf,
     /// Set when `cd` targets a file (has an extension).
     cd_file: Option<PathBuf>,
+    /// Whether `edit file` is allowed.
+    allow_file_edit: bool,
 }
 
 impl DslContext {
@@ -146,6 +163,8 @@ impl DslContext {
             "references" => handle_symbol_cmd(ops, warnings, "references", args, &self.cd_dir),
             "docstring" => handle_symbol_cmd(ops, warnings, "docstring", args, &self.cd_dir),
             "impls" => handle_symbol_cmd(ops, warnings, "impls", args, &self.cd_dir),
+            "callers" => handle_symbol_cmd(ops, warnings, "callers", args, &self.cd_dir),
+            "callees" => handle_symbol_cmd(ops, warnings, "callees", args, &self.cd_dir),
 
             // read file
             "read" | "cat" => handle_read(ops, args, &self.cd_dir, self.cd_file.as_deref()),
@@ -171,6 +190,10 @@ impl DslContext {
             "search_output" => handle_search_output(ops, args),
             "define_trigger" => handle_define_trigger(ops, args),
             "await_trigger" => handle_await_trigger(ops, args),
+
+            // editing
+            "edit" => handle_edit(ops, warnings, args, &self.cd_dir, self.allow_file_edit),
+            "apply_edit" => handle_apply_edit(ops, warnings, args, &self.cd_dir),
 
             // refactoring
             "code_actions" => handle_code_actions(ops, args, &self.cd_dir, self.cd_file.as_deref()),

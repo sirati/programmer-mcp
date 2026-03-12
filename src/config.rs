@@ -63,6 +63,11 @@ pub struct Config {
     /// Format: [user@]host[:port]
     #[arg(long)]
     pub remote: Option<String>,
+
+    /// Enable the `edit file` command for raw file editing.
+    /// Disabled by default for safety.
+    #[arg(long, default_value_t = false)]
+    pub allow_file_edit: bool,
 }
 
 impl Config {
@@ -87,10 +92,7 @@ impl Config {
         })?;
 
         if !canonical.is_dir() {
-            anyhow::bail!(
-                "workspace '{}' is not a directory",
-                canonical.display()
-            );
+            anyhow::bail!("workspace '{}' is not a directory", canonical.display());
         }
 
         config.workspace = Some(canonical);

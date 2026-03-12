@@ -5,12 +5,14 @@
 
 use std::path::Path;
 
+pub mod edit;
 pub mod file;
 pub mod lsp;
 pub mod process;
 pub mod refactor;
 pub mod task;
 
+pub use edit::{handle_apply_edit, handle_edit};
 pub use file::{handle_grep, handle_read};
 pub use lsp::{
     handle_diagnostics, handle_hover, handle_list_symbols, handle_rename_symbol, handle_symbol_cmd,

@@ -169,6 +169,7 @@ async fn run_normal_server(config: Config) -> anyhow::Result<()> {
         background,
         workspace.clone(),
         diag_cache,
+        config.allow_file_edit,
     );
 
     // Start remote listener for SSH-based sessions

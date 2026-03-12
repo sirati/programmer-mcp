@@ -82,6 +82,36 @@ pub async fn execute_symbol_op(manager: &LspManager, op: Operation) -> Operation
             )
             .await
         }
+        Operation::Callers {
+            symbol_names,
+            language,
+            search_dir,
+        } => {
+            let clients = manager.resolve(language.as_deref(), None);
+            execute_multi_symbol(
+                "callers",
+                clients,
+                &symbol_names,
+                search_dir.as_deref(),
+                |client, name, sd| async move { call_hierarchy::callers(client, name, sd).await },
+            )
+            .await
+        }
+        Operation::Callees {
+            symbol_names,
+            language,
+            search_dir,
+        } => {
+            let clients = manager.resolve(language.as_deref(), None);
+            execute_multi_symbol(
+                "callees",
+                clients,
+                &symbol_names,
+                search_dir.as_deref(),
+                |client, name, sd| async move { call_hierarchy::callees(client, name, sd).await },
+            )
+            .await
+        }
         Operation::Impls {
             symbol_names,
             language,

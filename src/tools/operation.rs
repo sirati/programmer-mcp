@@ -178,6 +178,27 @@ pub enum Operation {
         #[serde(rename = "maxDepth", default = "default_one")]
         max_depth: usize,
     },
+    /// Edit a symbol's body/signature/docs with indentation normalization.
+    Edit {
+        /// Edit types: "body", "signature", "docs", "file"
+        #[serde(rename = "editTypes")]
+        edit_types: Vec<String>,
+        path: String,
+        #[serde(rename = "symbolName", default)]
+        symbol_name: String,
+        #[serde(rename = "newContent")]
+        new_content: String,
+        #[serde(rename = "searchDir", skip)]
+        search_dir: Option<String>,
+    },
+    /// Apply a pending edit after disambiguation.
+    ApplyEdit {
+        #[serde(rename = "editId")]
+        edit_id: String,
+        path: String,
+        #[serde(rename = "symbolName")]
+        symbol_name: String,
+    },
     /// Send a raw LSP request (for debugging/development).
     RawLspRequest {
         method: String,
