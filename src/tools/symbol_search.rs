@@ -50,17 +50,21 @@ pub fn filter_exact_matches(symbols: &[SymbolInformation], name: &str) -> Vec<Sy
         .collect()
 }
 
-/// Search for a symbol using workspace/symbol, trying case variations if needed.
+/// Search for a symbol, trying index-based lookups first, then LSP round-trips.
 ///
-/// When `name` contains `.` (e.g. `RelayChannel.relay`) a multi-step parent/child
-/// fallback is attempted before the plain fuzzy search:
-///   1. workspace/symbol(child) filtered by exact parent container name
-///   2. workspace/symbol(child) filtered by fuzzy parent container name
-///   3. document/symbol on parent's file, exact child in document
-///   4. document/symbol on parent's file, fuzzy child in document
-///   5. fuzzy parent lookup, document/symbol for exact child
-///   6. child-only exact (workspace/symbol)
-///   7. child-only fuzzy (workspace/symbol)
+/// For dotted names (e.g. `Client.send`), resolution order:
+///   1. Index: child by name + container filter (O(1), most precise)
+///   2. Index: parent lookup + documentSymbol scan for child
+///   3-4. workspace/symbol(child) with exact/fuzzy parent container
+///   5-8. workspace/symbol(parent) + documentSymbol for child
+///   9. child-only exact (workspace/symbol)
+///   10. child-only fuzzy (workspace/symbol)
+///
+/// For plain names, resolution order:
+///   1. Symbol index exact + case variations
+///   2. workspace/symbol exact + case variations + fuzzy
+///   3. Nucleo fuzzy index
+///   4. Directory walk fallback
 pub async fn find_symbol_with_fallback(
     client: &Arc<LspClient>,
     name: &str,
@@ -73,87 +77,11 @@ pub async fn find_symbol_with_fallback(
 
         debug!(parent, child, "trying parent.child resolution");
 
-        // Steps 1 & 2: workspace/symbol(child) with exact/fuzzy parent container
-        for fuzzy_parent in [false, true] {
-            if let Some(found) =
-                try_parent_child_workspace(client, parent, child, fuzzy_parent, false).await?
-            {
-                return Ok(found);
-            }
-        }
+        // ── Index-based lookups (fast, O(1)) ────────────────────────────────
 
-        // Steps 3, 4, 5: find parent via workspace/symbol, then document/symbol
-        for fuzzy_parent in [false, true] {
-            for fuzzy_child in [false, true] {
-                if let Some(found) =
-                    try_parent_child_via_document(client, parent, child, fuzzy_parent, fuzzy_child)
-                        .await?
-                {
-                    return Ok(found);
-                }
-            }
-        }
-
-        // Step 6: child-only exact
-        let child_results = client
-            .symbol_cache()
-            .workspace_symbol(client, child)
-            .await?;
-        let exact = filter_exact_matches(&child_results, child);
-        if !exact.is_empty() {
-            debug!(
-                child,
-                "parent.child: found child via exact child-only search"
-            );
-            return Ok(exact);
-        }
-
-        // Step 7: child-only fuzzy
-        if !child_results.is_empty() {
-            let good = best_fuzzy_matches(child_results, child);
-            if !good.is_empty() {
-                debug!(
-                    child,
-                    "parent.child: found child via fuzzy child-only search"
-                );
-                return Ok(good);
-            }
-        }
-
-        // Steps 8 & 9: index-based parent.child lookup (for LSPs without workspace/symbol)
-        let parent_from_index = client.symbol_cache().exact_search(parent).await;
-        if !parent_from_index.is_empty() {
-            // Index found parent — scan its file(s) for the child
-            let mut uris: Vec<Uri> = Vec::new();
-            for sym in &parent_from_index {
-                let uri = sym.location.uri.clone();
-                if !uris.contains(&uri) {
-                    uris.push(uri);
-                }
-            }
-            for uri in &uris {
-                if let Some(path) = uri_to_path(uri) {
-                    let _ = client.open_file(&path).await;
-                }
-                let doc_symbols = match client.document_symbol(uri).await {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                let exact = collect_doc_symbol_matches(&doc_symbols, uri, child, false);
-                if !exact.is_empty() {
-                    debug!(
-                        parent,
-                        child, "parent.child: found via index parent + doc child"
-                    );
-                    return Ok(exact);
-                }
-            }
-        }
-
-        // Also try child-only from index
+        // 1. Index: child by name, filter by container matching parent
         let child_from_index = client.symbol_cache().exact_search(child).await;
         if !child_from_index.is_empty() {
-            // Filter to those whose container matches parent
             let filtered: Vec<_> = child_from_index
                 .into_iter()
                 .filter(|s| {
@@ -172,18 +100,93 @@ pub async fn find_symbol_with_fallback(
             }
         }
 
+        // 2. Index: find parent, scan its file(s) for child via documentSymbol
+        if let Some(found) = try_index_parent_doc_child(client, parent, child).await? {
+            return Ok(found);
+        }
+
+        // ── workspace/symbol-based lookups ──────────────────────────────────
+
+        // 3 & 4: workspace/symbol(child) with exact/fuzzy parent container
+        for fuzzy_parent in [false, true] {
+            if let Some(found) =
+                try_parent_child_workspace(client, parent, child, fuzzy_parent, false).await?
+            {
+                return Ok(found);
+            }
+        }
+
+        // 5-8: find parent via workspace/symbol, then document/symbol
+        for fuzzy_parent in [false, true] {
+            for fuzzy_child in [false, true] {
+                if let Some(found) =
+                    try_parent_child_via_document(client, parent, child, fuzzy_parent, fuzzy_child)
+                        .await?
+                {
+                    return Ok(found);
+                }
+            }
+        }
+
+        // 9: child-only exact
+        let child_results = client
+            .symbol_cache()
+            .workspace_symbol(client, child)
+            .await?;
+        let exact = filter_exact_matches(&child_results, child);
+        if !exact.is_empty() {
+            debug!(
+                child,
+                "parent.child: found child via exact child-only search"
+            );
+            return Ok(exact);
+        }
+
+        // 10: child-only fuzzy
+        if !child_results.is_empty() {
+            let good = best_fuzzy_matches(child_results, child);
+            if !good.is_empty() {
+                debug!(
+                    child,
+                    "parent.child: found child via fuzzy child-only search"
+                );
+                return Ok(good);
+            }
+        }
+
         // Fall through to plain search on the full name.
     }
 
     // ── plain (non-dotted) resolution ────────────────────────────────────────
 
+    // ── 1. Symbol index (fast, local) ───────────────────────────────────────
+    let exact_from_index = client.symbol_cache().exact_search(name).await;
+    if !exact_from_index.is_empty() {
+        debug!(
+            name,
+            count = exact_from_index.len(),
+            "found via symbol index (exact)"
+        );
+        return Ok(exact_from_index);
+    }
+
+    // Case variations on the index
+    for variant in case_variations(name).into_iter().skip(1) {
+        let exact = client.symbol_cache().exact_search(&variant).await;
+        if !exact.is_empty() {
+            debug!(name, variant = %variant, "found via symbol index (case variation)");
+            return Ok(exact);
+        }
+    }
+
+    // ── 2. workspace/symbol (LSP round-trip) ────────────────────────────────
     let results = client.symbol_cache().workspace_symbol(client, name).await?;
     let exact = filter_exact_matches(&results, name);
     if !exact.is_empty() {
         return Ok(exact);
     }
 
-    // Try case variations
+    // Case variations via workspace/symbol
     for variant in case_variations(name).into_iter().skip(1) {
         debug!(original = name, variant = %variant, "trying case variation");
         let results = client
@@ -197,7 +200,6 @@ pub async fn find_symbol_with_fallback(
     }
 
     // Fuzzy: use original query results and find best matches by similarity
-    let results = client.symbol_cache().workspace_symbol(client, name).await?;
     if !results.is_empty() {
         let good = best_fuzzy_matches(results, name);
         if !good.is_empty() {
@@ -205,38 +207,14 @@ pub async fn find_symbol_with_fallback(
         }
     }
 
-    // ── symbol index exact lookup ──────────────────────────────────────────
-    // The index is populated from workspace/symbol or document symbol scans.
-    let exact_from_index = client.symbol_cache().exact_search(name).await;
-    if !exact_from_index.is_empty() {
-        debug!(
-            name,
-            count = exact_from_index.len(),
-            "found via symbol index (exact)"
-        );
-        return Ok(exact_from_index);
-    }
-
-    // Try case variations on the index too
-    for variant in case_variations(name).into_iter().skip(1) {
-        let exact = client.symbol_cache().exact_search(&variant).await;
-        if !exact.is_empty() {
-            debug!(name, variant = %variant, "found via symbol index (case variation)");
-            return Ok(exact);
-        }
-    }
-
-    // ── cached fuzzy index fallback ─────────────────────────────────────────
-    // Search the accumulated symbol index using nucleo fuzzy matching.
+    // ── 3. Cached fuzzy index fallback ──────────────────────────────────────
     let fuzzy_results = client.symbol_cache().fuzzy_search(name, 10).await;
     if !fuzzy_results.is_empty() {
-        // Check for exact matches first
         let exact = filter_exact_matches(&fuzzy_results, name);
         if !exact.is_empty() {
             debug!(name, "found via cached fuzzy index (exact)");
             return Ok(exact);
         }
-        // Accept top fuzzy results
         debug!(
             name,
             count = fuzzy_results.len(),
@@ -245,9 +223,7 @@ pub async fn find_symbol_with_fallback(
         return Ok(fuzzy_results);
     }
 
-    // ── directory-walk fallback ──────────────────────────────────────────────
-    // When all strategies above fail, walk upward from search_dir scanning
-    // document symbols. Results are also fed into the index for future lookups.
+    // ── 4. Directory-walk fallback ──────────────────────────────────────────
     if let Some(dir) = search_dir {
         if let Some(found) = try_directory_walk(client, name, dir).await? {
             return Ok(found);
@@ -271,6 +247,46 @@ fn best_fuzzy_matches(symbols: Vec<SymbolInformation>, query: &str) -> Vec<Symbo
         .filter(|(score, _)| *score > 0.8)
         .map(|(_, s)| s)
         .collect()
+}
+
+/// Find parent in symbol index, then scan its file(s) for child via documentSymbol.
+async fn try_index_parent_doc_child(
+    client: &Arc<LspClient>,
+    parent: &str,
+    child: &str,
+) -> Result<Option<Vec<SymbolInformation>>, crate::lsp::client::LspClientError> {
+    let parent_from_index = client.symbol_cache().exact_search(parent).await;
+    if parent_from_index.is_empty() {
+        return Ok(None);
+    }
+
+    let mut uris: Vec<Uri> = Vec::new();
+    for sym in &parent_from_index {
+        let uri = sym.location.uri.clone();
+        if !uris.contains(&uri) {
+            uris.push(uri);
+        }
+    }
+
+    for uri in &uris {
+        if let Some(path) = uri_to_path(uri) {
+            let _ = client.open_file(&path).await;
+        }
+        let doc_symbols = match client.document_symbol(uri).await {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let exact = collect_doc_symbol_matches(&doc_symbols, uri, child, false);
+        if !exact.is_empty() {
+            debug!(
+                parent,
+                child, "parent.child: found via index parent + doc child"
+            );
+            return Ok(Some(exact));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Attempt to match `child` symbols from workspace/symbol whose `container_name`
