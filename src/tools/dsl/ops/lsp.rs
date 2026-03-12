@@ -214,15 +214,17 @@ pub fn handle_symbol_cmd(
     } else {
         Some(cd_dir.display().to_string())
     };
-    // When cd_file is set, scope search to that file's language.
-    let language = cd_file.and_then(|f| {
-        let lang = detect_language_id(&f.display().to_string());
-        if lang.is_empty() {
-            None
-        } else {
-            Some(lang.to_string())
-        }
-    });
+    // Scope search to the language of the current context.
+    let language = cd_file
+        .and_then(|f| {
+            let lang = detect_language_id(&f.display().to_string());
+            if lang.is_empty() {
+                None
+            } else {
+                Some(lang.to_string())
+            }
+        })
+        .or_else(|| detect_dir_language(cd_dir));
     push_symbol_op(ops, cmd, syms, language, search_dir);
 }
 
@@ -283,4 +285,28 @@ fn push_symbol_op(
         _ => return,
     };
     ops.push(op);
+}
+
+/// Detect the dominant programming language in a directory by sampling source files.
+fn detect_dir_language(dir: &Path) -> Option<String> {
+    if dir.as_os_str().is_empty() {
+        return None;
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for entry in entries.take(50).flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let lang = detect_language_id(&path.display().to_string());
+            if !lang.is_empty() {
+                *counts.entry(lang.to_string()).or_default() += 1;
+            }
+        }
+    }
+
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(lang, _)| lang)
 }
