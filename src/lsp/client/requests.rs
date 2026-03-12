@@ -193,6 +193,60 @@ impl LspClient {
         Ok(result.unwrap_or_default())
     }
 
+    /// Prepare call hierarchy at a position.
+    pub async fn call_hierarchy_prepare(
+        &self,
+        uri: &Uri,
+        position: Position,
+    ) -> Result<Option<Vec<lsp_types::CallHierarchyItem>>, LspClientError> {
+        let params = lsp_types::CallHierarchyPrepareParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position,
+            },
+            work_done_progress_params: Default::default(),
+        };
+        let result: Option<Vec<lsp_types::CallHierarchyItem>> = self
+            .rpc
+            .request(CallHierarchyPrepare::METHOD, RpcParams(params))
+            .await?;
+        Ok(result)
+    }
+
+    /// Get incoming calls (callers) for a call hierarchy item.
+    pub async fn call_hierarchy_incoming(
+        &self,
+        item: lsp_types::CallHierarchyItem,
+    ) -> Result<Option<Vec<lsp_types::CallHierarchyIncomingCall>>, LspClientError> {
+        let params = lsp_types::CallHierarchyIncomingCallsParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let result: Option<Vec<lsp_types::CallHierarchyIncomingCall>> = self
+            .rpc
+            .request(CallHierarchyIncomingCalls::METHOD, RpcParams(params))
+            .await?;
+        Ok(result)
+    }
+
+    /// Get outgoing calls (callees) from a call hierarchy item.
+    pub async fn call_hierarchy_outgoing(
+        &self,
+        item: lsp_types::CallHierarchyItem,
+    ) -> Result<Option<Vec<lsp_types::CallHierarchyOutgoingCall>>, LspClientError> {
+        let params = lsp_types::CallHierarchyOutgoingCallsParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let result: Option<Vec<lsp_types::CallHierarchyOutgoingCall>> = self
+            .rpc
+            .request(CallHierarchyOutgoingCalls::METHOD, RpcParams(params))
+            .await?;
+        Ok(result)
+    }
+
     /// Send an arbitrary LSP request and return the raw JSON response.
     pub async fn raw_request(
         &self,

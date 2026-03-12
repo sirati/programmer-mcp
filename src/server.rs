@@ -17,13 +17,14 @@ use crate::tools::{self, OperationResult};
 #[derive(Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 pub struct ExecuteRequest {
     /// Multi-line DSL script. Each line is one command; `#` starts a comment.
+    /// Use `|` to separate multiple commands on a single line.
     ///
     /// Navigation:
     ///   cd <dir>                  — set directory context (no extension = folder)
     ///   cd <file.ext>             — set file context (extension required)
     ///
     /// File-based operations (use [file list] or current cd file):
-    ///   list_symbols [f1 f2]      — symbol tree of files
+    ///   list_symbols [f1 f2]      — symbol tree of files; on a directory: lists source files
     ///   diagnostics [f1 f2]       — errors/warnings for files
     ///   hover <file> <line> <col> — hover info at position (file optional if cd'd)
     ///   rename_symbol <file> <line> <col> <new_name>
@@ -60,6 +61,10 @@ pub struct ExecuteRequest {
     ///   code_actions <file> <line> <col>   — list available code actions
     ///   apply_action <file> <line> <col> <index> — apply a code action by index
     ///   format [files]                     — format files
+    ///
+    /// Read & Search:
+    ///   read <file> [start end]            — read file contents (line range optional)
+    ///   grep <pattern>                     — search workspace files for text (scoped by cd)
     ///
     /// Misc:
     ///   workspace_info                     — show subprojects and standalone files

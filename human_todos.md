@@ -213,3 +213,15 @@ further
 }
 no results for body
 did not cd into the location of TriggerResult if the fuzzy logic completely fails based on path restricted logic, the path should one step at a time be traversed upwards (e.g. cd ..) and at that location ALL sublocation should be searched again using the fuzzy logic. this stops at the project root of course cd cannot leave the project root. if this path traversal happens, it should say found symbol {symbol} as {fuzzy resolved} at unexpected location {location with e.g. file extensions removed, reletative path to where the command was issued}. if multiple symbols are resolved at the same path it should be like {symbol1 symbal2.{. subsymbol}}} as {fuzzy1 fuzzy2.{. fuzzysubsymbol}} respectively, so avoid repeating.
+
+
+
+const SOURCE_EXTS: &[&str] = &[
+    "rs", "go", "py", "js", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "java", "kt", "scala",
+    "rb", "ex", "exs", "nix", "toml", "yaml", "yml", "json", "sh", "bash", "zsh", "lua",
+    "zig", "swift", "cs", "fs", "ml", "mli", "hs", "el", "clj", "sql",
+];
+lists like those exist i think more than four times in the codebase. extract such duplicated code to its own module. in this case it should be a module about identifying and working with source files based on their extensions.
+
+
+i have noticed that .cache has both files named after something resembling the file structure, (i think its better if we actually build a parallel folder structure) further there are also files outside of diagnostics that have hex as their name. neither files contain the actual diagnostic, just the hash. idk why there are two types of files. anyway for it to be a cache we need to store the warnings and errors in a rich format.

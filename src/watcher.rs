@@ -77,14 +77,18 @@ async fn notify_and_collect(
     diag_cache: &Arc<DiagnosticsCache>,
     changes: &[lsp_types::FileEvent],
 ) {
-    // Notify LSP servers of file changes
+    // Notify LSP servers of file changes and invalidate symbol caches
     for client in manager.all() {
         if let Err(e) = client.did_change_watched_files(changes.to_vec()).await {
             debug!(lsp = %client.language(), "watched files notification failed: {e}");
         }
         for change in changes {
+            let uri_str = change.uri.as_str();
+            // Invalidate symbol cache for source file changes (skip build artifacts)
+            if !uri_str.contains("/target/") {
+                client.symbol_cache().invalidate_file(uri_str).await;
+            }
             if change.typ == lsp_types::FileChangeType::CHANGED {
-                let uri_str = change.uri.as_str();
                 if let Some(path) = uri_str.strip_prefix("file://") {
                     if let Err(e) = client.notify_file_changed(path).await {
                         debug!(lsp = %client.language(), path, "file change notify failed: {e}");

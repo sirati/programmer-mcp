@@ -4,6 +4,10 @@ pub fn default_max_depth() -> usize {
     3
 }
 
+pub fn default_one() -> usize {
+    1
+}
+
 pub fn default_trigger_lines_after() -> usize {
     5
 }

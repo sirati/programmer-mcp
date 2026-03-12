@@ -92,13 +92,16 @@ pub fn parse_dsl(commands: &str) -> ParseResult {
     let mut warnings = Vec::new();
     let mut ctx = DslContext::default();
 
-    for line in commands.lines() {
-        let line = strip_comment(line).trim();
-        if line.is_empty() {
-            continue;
+    for raw_line in commands.lines() {
+        // Support `|` as an inline command separator
+        for segment in raw_line.split('|') {
+            let line = strip_comment(segment).trim();
+            if line.is_empty() {
+                continue;
+            }
+            let (cmd, args) = split_first_word(line);
+            ctx.dispatch(&mut ops, &mut warnings, cmd, args);
         }
-        let (cmd, args) = split_first_word(line);
-        ctx.dispatch(&mut ops, &mut warnings, cmd, args);
     }
 
     ParseResult {
@@ -143,6 +146,12 @@ impl DslContext {
             "references" => handle_symbol_cmd(ops, warnings, "references", args, &self.cd_dir),
             "docstring" => handle_symbol_cmd(ops, warnings, "docstring", args, &self.cd_dir),
             "impls" => handle_symbol_cmd(ops, warnings, "impls", args, &self.cd_dir),
+
+            // read file
+            "read" | "cat" => handle_read(ops, args, &self.cd_dir, self.cd_file.as_deref()),
+
+            // search
+            "grep" | "search" => handle_grep(ops, args, &self.cd_dir),
 
             // workspace
             "workspace_info" | "workspace-info" => ops.push(Operation::WorkspaceInfo),

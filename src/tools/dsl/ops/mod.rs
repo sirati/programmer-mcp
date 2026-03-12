@@ -5,11 +5,13 @@
 
 use std::path::Path;
 
+pub mod file;
 pub mod lsp;
 pub mod process;
 pub mod refactor;
 pub mod task;
 
+pub use file::{handle_grep, handle_read};
 pub use lsp::{
     handle_diagnostics, handle_hover, handle_list_symbols, handle_rename_symbol, handle_symbol_cmd,
 };

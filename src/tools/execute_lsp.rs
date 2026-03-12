@@ -6,8 +6,8 @@ use super::exec_helpers::{execute_multi_symbol, execute_on_first};
 use super::json_util::{format_compact_json, strip_json_noise};
 use super::operation::{Operation, OperationResult};
 use super::{
-    code_actions, definition, diagnostics, hover, impls, references, rename, symbol_info,
-    symbol_list,
+    call_hierarchy, code_actions, definition, diagnostics, hover, impls, references, rename,
+    symbol_info, symbol_list,
 };
 
 /// Dispatch a symbol-based LSP operation.

@@ -95,7 +95,10 @@ pub async fn find_symbol_with_fallback(
         }
 
         // Step 6: child-only exact
-        let child_results = client.workspace_symbol(child).await?;
+        let child_results = client
+            .symbol_cache()
+            .workspace_symbol(client, child)
+            .await?;
         let exact = filter_exact_matches(&child_results, child);
         if !exact.is_empty() {
             debug!(
@@ -122,7 +125,7 @@ pub async fn find_symbol_with_fallback(
 
     // ── plain (non-dotted) resolution ────────────────────────────────────────
 
-    let results = client.workspace_symbol(name).await?;
+    let results = client.symbol_cache().workspace_symbol(client, name).await?;
     let exact = filter_exact_matches(&results, name);
     if !exact.is_empty() {
         return Ok(exact);
@@ -131,7 +134,10 @@ pub async fn find_symbol_with_fallback(
     // Try case variations
     for variant in case_variations(name).into_iter().skip(1) {
         debug!(original = name, variant = %variant, "trying case variation");
-        let results = client.workspace_symbol(&variant).await?;
+        let results = client
+            .symbol_cache()
+            .workspace_symbol(client, &variant)
+            .await?;
         let exact = filter_exact_matches(&results, &variant);
         if !exact.is_empty() {
             return Ok(exact);
@@ -139,12 +145,31 @@ pub async fn find_symbol_with_fallback(
     }
 
     // Fuzzy: use original query results and find best matches by similarity
-    let results = client.workspace_symbol(name).await?;
+    let results = client.symbol_cache().workspace_symbol(client, name).await?;
     if !results.is_empty() {
         let good = best_fuzzy_matches(results, name);
         if !good.is_empty() {
             return Ok(good);
         }
+    }
+
+    // ── cached fuzzy index fallback ─────────────────────────────────────────
+    // Search the accumulated symbol index using nucleo fuzzy matching.
+    let fuzzy_results = client.symbol_cache().fuzzy_search(name, 10).await;
+    if !fuzzy_results.is_empty() {
+        // Check for exact matches first
+        let exact = filter_exact_matches(&fuzzy_results, name);
+        if !exact.is_empty() {
+            debug!(name, "found via cached fuzzy index (exact)");
+            return Ok(exact);
+        }
+        // Accept top fuzzy results
+        debug!(
+            name,
+            count = fuzzy_results.len(),
+            "found via cached fuzzy index"
+        );
+        return Ok(fuzzy_results);
     }
 
     // ── directory-walk fallback ──────────────────────────────────────────────
@@ -184,7 +209,10 @@ async fn try_parent_child_workspace(
     fuzzy_parent: bool,
     fuzzy_child: bool,
 ) -> Result<Option<Vec<SymbolInformation>>, crate::lsp::client::LspClientError> {
-    let results = client.workspace_symbol(child).await?;
+    let results = client
+        .symbol_cache()
+        .workspace_symbol(client, child)
+        .await?;
 
     let matches: Vec<SymbolInformation> = results
         .into_iter()
@@ -220,7 +248,10 @@ async fn try_parent_child_via_document(
     fuzzy_parent: bool,
     fuzzy_child: bool,
 ) -> Result<Option<Vec<SymbolInformation>>, crate::lsp::client::LspClientError> {
-    let parent_results = client.workspace_symbol(parent).await?;
+    let parent_results = client
+        .symbol_cache()
+        .workspace_symbol(client, parent)
+        .await?;
     let parent_symbols: Vec<_> = parent_results
         .iter()
         .filter(|s| child_name_matches(&s.name, parent, fuzzy_parent))

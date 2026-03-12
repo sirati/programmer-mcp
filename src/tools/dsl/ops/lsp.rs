@@ -20,16 +20,37 @@ pub fn handle_list_symbols(
                 max_depth: 3,
                 language: None,
             });
+        } else {
+            // No file context — list directory contents
+            ops.push(Operation::ListDir {
+                dir_path: cd_dir.display().to_string(),
+                max_depth: 1,
+            });
         }
         return;
     }
     for item in parse_item_list(args) {
         if let Some(path) = resolve_list_item(&item, cd_dir, cd_file) {
-            ops.push(Operation::ListSymbols {
-                file_path: path,
-                max_depth: 3,
-                language: None,
-            });
+            // Check if the resolved path is a directory
+            let abs = if Path::new(&path).is_absolute() {
+                std::path::PathBuf::from(&path)
+            } else if let Ok(cwd) = std::env::current_dir() {
+                cwd.join(&path)
+            } else {
+                std::path::PathBuf::from(&path)
+            };
+            if abs.is_dir() {
+                ops.push(Operation::ListDir {
+                    dir_path: path,
+                    max_depth: 1,
+                });
+            } else {
+                ops.push(Operation::ListSymbols {
+                    file_path: path,
+                    max_depth: 3,
+                    language: None,
+                });
+            }
         }
     }
 }

@@ -24,6 +24,10 @@ impl LspManager {
         let mut clients = HashMap::new();
 
         for spec in specs {
+            if clients.contains_key(&spec.language) {
+                info!(language = %spec.language, command = %spec.command, "skipping duplicate LSP for language");
+                continue;
+            }
             info!(language = %spec.language, command = %spec.command, "starting LSP");
             if let Some(client) = start_one_spec(spec, workspace, &nix).await {
                 clients.insert(spec.language.clone(), Arc::new(client));

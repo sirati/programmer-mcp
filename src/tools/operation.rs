@@ -48,6 +48,22 @@ pub enum Operation {
         #[serde(skip)]
         search_dir: Option<String>,
     },
+    /// Find callers (incoming calls) of symbols.
+    Callers {
+        #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
+        symbol_names: Vec<String>,
+        language: Option<String>,
+        #[serde(skip)]
+        search_dir: Option<String>,
+    },
+    /// Find callees (outgoing calls) from symbols.
+    Callees {
+        #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
+        symbol_names: Vec<String>,
+        language: Option<String>,
+        #[serde(skip)]
+        search_dir: Option<String>,
+    },
     /// Find all impl blocks for a type (Rust-specific).
     Impls {
         #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
@@ -136,6 +152,31 @@ pub enum Operation {
         #[serde(rename = "filePath")]
         file_path: String,
         language: Option<String>,
+    },
+    /// Read file contents with optional line range.
+    ReadFile {
+        #[serde(rename = "filePath")]
+        file_path: String,
+        /// Start line (1-indexed, 0 = from beginning).
+        #[serde(rename = "startLine", default)]
+        start_line: usize,
+        /// End line (1-indexed, 0 = auto).
+        #[serde(rename = "endLine", default)]
+        end_line: usize,
+    },
+    /// Search workspace files for a text pattern.
+    Grep {
+        pattern: String,
+        /// Optional directory to scope the search.
+        #[serde(rename = "searchDir")]
+        search_dir: Option<String>,
+    },
+    /// List source files in a directory (like ls for code).
+    ListDir {
+        #[serde(rename = "dirPath")]
+        dir_path: String,
+        #[serde(rename = "maxDepth", default = "default_one")]
+        max_depth: usize,
     },
     /// Send a raw LSP request (for debugging/development).
     RawLspRequest {

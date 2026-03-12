@@ -12,7 +12,7 @@ use crate::lsp::manager::LspManager;
 
 use super::execute_lsp;
 use super::operation::{Operation, OperationResult};
-use super::{process_ops, task_ops, workspace};
+use super::{grep, list_dir, process_ops, read_file, task_ops, workspace};
 
 /// Execute a batch of operations concurrently.
 pub async fn execute_batch(
@@ -61,6 +61,8 @@ async fn execute_one(
         | Operation::References { .. }
         | Operation::Docstring { .. }
         | Operation::Body { .. }
+        | Operation::Callers { .. }
+        | Operation::Callees { .. }
         | Operation::Impls { .. } => execute_lsp::execute_symbol_op(manager, op).await,
 
         // LSP: file-based
@@ -81,6 +83,46 @@ async fn execute_one(
                 operation: "request_human_message".into(),
                 success: true,
                 output: msg,
+            }
+        }
+
+        // Read file
+        Operation::ReadFile {
+            file_path,
+            start_line,
+            end_line,
+        } => {
+            let output = read_file::read_file(file_path, *start_line, *end_line, workspace_root);
+            OperationResult {
+                operation: "read".into(),
+                success: true,
+                output,
+            }
+        }
+
+        // Grep search
+        Operation::Grep {
+            pattern,
+            search_dir,
+        } => {
+            let output = grep::grep_workspace(pattern, search_dir.as_deref(), workspace_root);
+            OperationResult {
+                operation: "grep".into(),
+                success: true,
+                output,
+            }
+        }
+
+        // Directory listing
+        Operation::ListDir {
+            dir_path,
+            max_depth,
+        } => {
+            let output = list_dir::list_source_files(&dir_path, *max_depth, workspace_root);
+            OperationResult {
+                operation: "list_dir".into(),
+                success: true,
+                output,
             }
         }
 

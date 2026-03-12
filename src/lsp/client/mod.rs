@@ -29,6 +29,7 @@ use tracing::{debug, info, warn};
 
 use super::capabilities::build_client_capabilities;
 use super::transport;
+use crate::tools::symbol_cache::SymbolCache;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -64,6 +65,7 @@ pub struct LspClient {
     language: String,
     open_files: Arc<RwLock<HashMap<String, OpenFileInfo>>>,
     diagnostics: Arc<RwLock<HashMap<String, Vec<Diagnostic>>>>,
+    symbol_cache: SymbolCache,
     _child: tokio::process::Child,
 }
 
@@ -104,6 +106,7 @@ impl LspClient {
             language: language.to_string(),
             open_files: Arc::new(RwLock::new(HashMap::new())),
             diagnostics: Arc::new(RwLock::new(HashMap::new())),
+            symbol_cache: SymbolCache::new(),
             _child: child,
         })
     }
@@ -205,5 +208,9 @@ impl LspClient {
 
     pub fn language(&self) -> &str {
         &self.language
+    }
+
+    pub fn symbol_cache(&self) -> &SymbolCache {
+        &self.symbol_cache
     }
 }
