@@ -309,3 +309,61 @@ another issue here is the edit was called with body but was able to edit the sig
 detected a signature at the start of a body only edit! please use `edit [body signature] ...` in the future. to apply edit:
 apply_edit {short unique identifier e.g. three random words separated by _} [body signature] 
 
+
+
+/// Check if a line looks like a doc comment or attribute (not code).
+fn is_doc_or_attr(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("///")
+        || trimmed.starts_with("//!")
+        || trimmed.starts_with("/**")
+        || trimmed.starts_with("* ")
+        || trimmed.starts_with("*/")
+        || trimmed == "*"
+        || trimmed.starts_with("\"\"\"")
+        || trimmed.starts_with("'''")
+        || (trimmed.starts_with('#') && trimmed.contains('['))
+}
+please put programming specific code into language_specific/{lang}/
+
+lets also allow more targetted edits by providing a 3-6 line snipped before it starts, and after it ends. here we need to support a way to indicate START end END of the file/body to allow for targetted edits that end at the end of starts just after the signature. if multiple matches were found all options are presented. and one can do apply_edit {short unique identifier e} [list of the indecies of the ranges presented must be none-overlapping] otherwise we fail again. 
+when doing this the segment before and after may be separated to our edits by empty / only whitespace lines. we ignore these but keep them as is. further for finding the indention we must also ignore such empty / only whitespace lines.
+because some languages like python use indentation for meaning this command should be provided with these section in a multiline friendly way, if provided like rn without multilines, we try our best to apply it, if its a language like python we fail by printing the diff, and ask if the indendation is correct with edit_apply {identifier} if correct, or telling them to do edit_apply {identifier} "correct\n  multiline\ncode"
+ s
+
+lets create a configurable max file length and max function length (ignoring empty lines). the config should have a suggestion and a hard limit for both. if an edit results in either of these four limits to be execeeded, it does not stop the edit from applying, it is only printed if the edit was applied!  s
+
+
+{
+  "commands": "apply_edit warm_sky_dips src/tools/indent.rs gcd_u32"
+}
+detected a signature change at the start of a body-only edit!
+please use `edit body,signature` in the future.
+to apply this edit anyway:
+  apply_edit bold_ash_arcs src/tools/indent.rs gcd_u32
+  
+if apply_edit does not change the edit content and targetting and it fails again, lets 
+
+
+
+i have noticed these kinds of usage errors often because this is how edit works, where you specify the path first
+{
+  "commands": "body src/tools/dsl/ops/edit.rs handle_apply_edit"
+}
+⚠ command `body src/tools/dsl/ops/edit.rs handle_apply_edit` was used without brackets — correct usage: `body [src/tools/dsl/ops/edit.rs handle_apply_edit]` 
+if our fuzze detects that the first argument is exactly a path OR the second argument is fuzzily resolved to be located in the first argument we should warn differently:
+incorrect arguments, corrected to `body src/tools/dsl/ops/edit.rs.{handle_apply_edit, .}`
+
+
+when an edit was applied lets allow undo {new unique word identifier} -> this checks if the inserted edit string still exists (ignoring indention trailing whitespaces and empty lines), and if it does, we undo it.
+the successful edit response should end is Undo with: undo {new unique word identifier}
+
+
+i have noticed the when listing symbols the result is more verbose than it has to be:
+rn ifs: method a method b field c using d trait f trait g
+it should me usings: d, methods: a, b, fields: c, traits: f, g
+listing symbols currently does not work for directories, in that case it should list the directory content like
+dirs: a, b, files: c, d, e
+
+
+lets make sure that stores like undo or for apply_edit are per connection, and cleared if the connection is closed. also they should have a max capacity of 1000, after that the longest unused entry is dropped in favour if thenew.

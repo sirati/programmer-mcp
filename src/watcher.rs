@@ -103,6 +103,13 @@ async fn notify_and_collect(
         .iter()
         .filter(|c| c.typ != lsp_types::FileChangeType::DELETED)
         .filter_map(|c| c.uri.as_str().strip_prefix("file://").map(String::from))
+        .filter(|p| {
+            // Skip non-source paths to avoid recursive caching
+            !p.contains("/.git/")
+                && !p.contains("/target/")
+                && !p.contains("/.programmer-mcp/")
+                && !p.contains("/node_modules/")
+        })
         .collect();
 
     if changed_paths.is_empty() {

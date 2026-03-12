@@ -12,7 +12,7 @@ pub mod process;
 pub mod refactor;
 pub mod task;
 
-pub use edit::{handle_apply_edit, handle_edit};
+pub use edit::{handle_apply_edit, handle_edit, handle_edit_range};
 pub use file::{handle_grep, handle_read};
 pub use lsp::{
     handle_diagnostics, handle_hover, handle_list_symbols, handle_rename_symbol, handle_symbol_cmd,
@@ -29,11 +29,7 @@ pub use task::{
 
 // ── path helpers ──────────────────────────────────────────────────────────────
 
-/// Recognized source-file extensions used for optional-extension resolution.
-pub const SOURCE_EXTENSIONS: &[&str] = &[
-    "rs", "py", "go", "ts", "tsx", "js", "jsx", "c", "cpp", "cc", "h", "hpp", "java", "kt", "rb",
-    "cs", "swift", "zig", "lua", "ml", "mli", "nix", "sh",
-];
+use crate::tools::SOURCE_EXTS;
 
 /// Normalize `..` and `.` components without hitting the filesystem.
 pub fn normalize_path(path: &Path) -> std::path::PathBuf {
@@ -73,7 +69,7 @@ pub fn resolve_file(base_dir: &Path, item: &str) -> String {
         return joined;
     }
     if let Ok(cwd) = std::env::current_dir() {
-        for ext in SOURCE_EXTENSIONS {
+        for ext in SOURCE_EXTS {
             let candidate = cwd.join(rel).with_extension(ext);
             if candidate.exists() {
                 return rel.with_extension(ext).display().to_string();
@@ -95,7 +91,7 @@ pub fn resolve_cd_path(path: &Path) -> std::path::PathBuf {
         return path.to_path_buf();
     }
     if let Ok(cwd) = std::env::current_dir() {
-        for ext in SOURCE_EXTENSIONS {
+        for ext in SOURCE_EXTS {
             let candidate = cwd.join(path).with_extension(ext);
             if candidate.exists() {
                 return path.with_extension(ext);

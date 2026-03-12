@@ -5,6 +5,8 @@ pub mod diagnostics;
 pub mod diagnostics_cache;
 pub mod dsl;
 pub mod edit;
+pub mod edit_apply;
+pub mod edit_extract;
 pub mod exec_helpers;
 pub mod execute;
 mod execute_lsp;
@@ -33,3 +35,10 @@ pub mod workspace;
 
 pub use execute::execute_batch;
 pub use operation::{Operation, OperationResult};
+
+/// Source file extensions considered relevant across the codebase.
+pub const SOURCE_EXTS: &[&str] = &[
+    "rs", "go", "py", "js", "ts", "tsx", "jsx", "c", "cc", "h", "cpp", "hpp", "java", "kt",
+    "scala", "rb", "ex", "exs", "nix", "toml", "yaml", "yml", "json", "sh", "bash", "zsh", "lua",
+    "zig", "swift", "cs", "fs", "ml", "mli", "hs", "el", "clj", "sql",
+];

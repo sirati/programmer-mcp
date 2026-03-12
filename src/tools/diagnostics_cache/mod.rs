@@ -50,6 +50,24 @@ impl DiagnosticsCache {
     pub fn new(workspace: &Path) -> Arc<Self> {
         let cache_dir = workspace.join(".programmer-mcp").join(".cache");
         std::fs::create_dir_all(&cache_dir).ok();
+
+        // Migrate: remove old hex-named cache files from flat layout
+        if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().map(|e| e == "json").unwrap_or(false) {
+                    // Old hex-named files: name is purely hex digits
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        if stem.chars().all(|c| c.is_ascii_hexdigit()) {
+                            std::fs::remove_file(&path).ok();
+                        }
+                    }
+                }
+            }
+        }
+
+        std::fs::create_dir_all(cache_dir.join("diagnostics")).ok();
+
         Arc::new(Self {
             cache_dir,
             workspace_root: workspace.to_path_buf(),
@@ -124,9 +142,12 @@ impl DiagnosticsCache {
     }
 
     fn cache_path(&self, file_path: &str) -> PathBuf {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        file_path.hash(&mut h);
-        self.cache_dir.join(format!("{:x}.json", h.finish()))
+        let source = Path::new(file_path);
+        // Build a parallel folder structure: strip workspace root prefix, append .json
+        let relative = source.strip_prefix(&self.workspace_root).unwrap_or(source);
+        let mut name = relative.as_os_str().to_os_string();
+        name.push(".json");
+        self.cache_dir.join("diagnostics").join(PathBuf::from(name))
     }
 
     fn load_entry(&self, path: &Path) -> Option<CacheEntry> {
@@ -136,6 +157,9 @@ impl DiagnosticsCache {
 
     fn save_entry(&self, path: &Path, entry: &CacheEntry) {
         if let Ok(data) = serde_json::to_string(entry) {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
             std::fs::write(path, data).ok();
         }
     }

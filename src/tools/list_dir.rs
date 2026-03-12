@@ -3,16 +3,10 @@
 //! When `list_symbols` is called on a directory, this module provides a
 //! tree-style listing of source files within that directory.
 
-use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::Path;
 
-/// Source file extensions we consider relevant.
-const SOURCE_EXTS: &[&str] = &[
-    "rs", "go", "py", "js", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "java", "kt", "scala",
-    "rb", "ex", "exs", "nix", "toml", "yaml", "yml", "json", "sh", "bash", "zsh", "lua", "zig",
-    "swift", "cs", "fs", "ml", "mli", "hs", "el", "clj", "sql",
-];
+use super::SOURCE_EXTS;
 
 /// List source files in a directory as a tree.
 ///
@@ -30,55 +24,30 @@ pub fn list_source_files(dir_path: &str, max_depth: usize, workspace_root: &Path
         return format!("{dir_path}: not a directory");
     }
 
-    let mut entries: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    collect_files(abs, abs, max_depth, 0, &mut entries);
-
-    if entries.is_empty() {
-        return format!("{dir_path}: no source files found");
-    }
-
     let mut out = String::new();
-    for (subdir, files) in &entries {
-        if subdir.is_empty() {
-            // Files at root level
-            for f in files {
-                writeln!(out, "{f}").ok();
-            }
-        } else {
-            writeln!(out, "{subdir}/").ok();
-            for f in files {
-                writeln!(out, "  {f}").ok();
-            }
-        }
+    format_dir_compact(&mut out, abs, abs, max_depth, 0);
+
+    if out.is_empty() {
+        return format!("{dir_path}: no source files found");
     }
 
     out.trim_end().to_string()
 }
 
-fn collect_files(
-    base: &Path,
-    dir: &Path,
-    max_depth: usize,
-    depth: usize,
-    entries: &mut BTreeMap<String, Vec<String>>,
-) {
+/// Compact directory listing: `dirs: a, b  files: c, d, e`
+/// Recurses into subdirs with indentation.
+fn format_dir_compact(out: &mut String, base: &Path, dir: &Path, max_depth: usize, depth: usize) {
     let Ok(read_dir) = std::fs::read_dir(dir) else {
         return;
     };
 
-    let rel_dir = dir
-        .strip_prefix(base)
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-
     let mut files: Vec<String> = Vec::new();
-    let mut subdirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut subdirs: Vec<(String, std::path::PathBuf)> = Vec::new();
 
     for entry in read_dir.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
 
-        // Skip hidden dirs and common non-source dirs
         if name.starts_with('.')
             || name == "target"
             || name == "node_modules"
@@ -88,30 +57,42 @@ fn collect_files(
         }
 
         if path.is_dir() {
-            subdirs.push(path);
+            subdirs.push((name, path));
         } else if is_source_file(&name) {
             files.push(name);
         }
     }
 
     files.sort();
-    subdirs.sort();
+    subdirs.sort_by(|a, b| a.0.cmp(&b.0));
 
-    if !files.is_empty() {
-        entries.insert(rel_dir.clone(), files);
+    let indent = "  ".repeat(depth);
+
+    // Print dirs line
+    if !subdirs.is_empty() {
+        let dir_names: Vec<&str> = subdirs.iter().map(|(n, _)| n.as_str()).collect();
+        if dir_names.len() == 1 {
+            writeln!(out, "{indent}dir: {}", dir_names[0]).ok();
+        } else {
+            writeln!(out, "{indent}dirs: {}", dir_names.join(", ")).ok();
+        }
     }
 
-    if depth < max_depth {
-        for subdir in subdirs {
-            collect_files(base, &subdir, max_depth, depth + 1, entries);
+    // Print files line
+    if !files.is_empty() {
+        if files.len() == 1 {
+            writeln!(out, "{indent}file: {}", files[0]).ok();
+        } else {
+            writeln!(out, "{indent}files: {}", files.join(", ")).ok();
         }
-    } else if !subdirs.is_empty() {
-        // Show subdirectory names as hints at max depth
-        let dir_names: Vec<String> = subdirs
-            .iter()
-            .filter_map(|d| d.file_name().map(|n| format!("{}/", n.to_string_lossy())))
-            .collect();
-        entries.entry(rel_dir).or_default().extend(dir_names);
+    }
+
+    // Recurse into subdirs
+    if depth < max_depth {
+        for (name, path) in &subdirs {
+            writeln!(out, "{indent}{name}/").ok();
+            format_dir_compact(out, base, path, max_depth, depth + 1);
+        }
     }
 }
 

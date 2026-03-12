@@ -131,7 +131,7 @@ async fn run_debug_server(config: Config) -> anyhow::Result<()> {
     });
 
     // Start remote listener for debug server too
-    let remote_listener = remote::RemoteListener::new(config.socket_path());
+    let mut remote_listener = remote::RemoteListener::new(config.socket_path());
     remote_listener.start(server.clone());
 
     let service = server.serve(stdio()).await.inspect_err(|e| {
@@ -139,6 +139,7 @@ async fn run_debug_server(config: Config) -> anyhow::Result<()> {
     })?;
 
     service.waiting().await?;
+    remote_listener.shutdown();
     tracing::info!("programmer-mcp debug server shut down");
     Ok(())
 }
@@ -170,10 +171,11 @@ async fn run_normal_server(config: Config) -> anyhow::Result<()> {
         workspace.clone(),
         diag_cache,
         config.allow_file_edit,
+        config.length_limits(),
     );
 
     // Start remote listener for SSH-based sessions
-    let remote_listener = remote::RemoteListener::new(config.socket_path());
+    let mut remote_listener = remote::RemoteListener::new(config.socket_path());
     remote_listener.start(mcp_server.clone());
     let service = mcp_server.serve(stdio()).await.inspect_err(|e| {
         tracing::error!("MCP serve error: {e:?}");
@@ -181,6 +183,7 @@ async fn run_normal_server(config: Config) -> anyhow::Result<()> {
 
     service.waiting().await?;
 
+    remote_listener.shutdown();
     manager.shutdown().await;
     tracing::info!("programmer-mcp shut down");
     Ok(())

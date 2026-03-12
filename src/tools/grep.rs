@@ -6,12 +6,7 @@
 use std::fmt::Write;
 use std::path::Path;
 
-/// Source file extensions to search (same as list_dir).
-const SOURCE_EXTS: &[&str] = &[
-    "rs", "go", "py", "js", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "java", "kt", "scala",
-    "rb", "ex", "exs", "nix", "toml", "yaml", "yml", "json", "sh", "bash", "zsh", "lua", "zig",
-    "swift", "cs", "fs", "ml", "mli", "hs", "el", "clj", "sql",
-];
+use super::SOURCE_EXTS;
 
 /// Maximum number of matches to return.
 const MAX_MATCHES: usize = 50;

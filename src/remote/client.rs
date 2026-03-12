@@ -214,6 +214,7 @@ pub async fn run_remote_client(config: Config) -> anyhow::Result<()> {
         });
     }
 
+    let conn_cleanup = conn.clone();
     let proxy = RemoteProxyServer {
         conn,
         conn_params,
@@ -228,6 +229,13 @@ pub async fn run_remote_client(config: Config) -> anyhow::Result<()> {
         .inspect_err(|e| tracing::error!("remote proxy serve error: {e:?}"))?;
 
     service.waiting().await?;
+
+    // Explicitly kill SSH connections before exiting
+    if let Some(mut active) = conn_cleanup.lock().await.take() {
+        active.session_ssh.kill().await.ok();
+        info!("killed SSH tunnel process");
+    }
+
     info!("remote proxy shut down");
     Ok(())
 }

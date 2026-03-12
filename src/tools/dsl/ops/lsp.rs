@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use crate::tools::Operation;
+use crate::tools::SOURCE_EXTS;
 
 use super::super::parse::parse_item_list;
 use super::{non_empty_items, resolve_file, resolve_list_item};
@@ -129,7 +130,10 @@ pub fn handle_rename_symbol(
     });
 }
 
-/// Dispatch a symbol-based command, warning if bare args are used without brackets.
+/// Dispatch a symbol-based command, auto-correcting path-first usage.
+///
+/// When bare args like `body src/foo.rs my_fn` are used (path first, no brackets),
+/// detects the path and auto-corrects to `body [src/foo.rs my_fn]`.
 pub fn handle_symbol_cmd(
     ops: &mut Vec<Operation>,
     warnings: &mut Vec<String>,
@@ -138,9 +142,44 @@ pub fn handle_symbol_cmd(
     cd_dir: &Path,
 ) {
     let trimmed = args.trim();
-    // Warn if multiple bare args without brackets
-    if !trimmed.is_empty() && !trimmed.starts_with('[') {
+    if trimmed.is_empty() {
+        return;
+    }
+
+    // Detect path-first bare args: `body src/foo.rs my_fn`
+    // Auto-correct to bracket form: `body [src/foo.rs my_fn]`
+    if !trimmed.starts_with('[') {
         let items: Vec<&str> = trimmed.split_whitespace().collect();
+        if items.len() > 1 && looks_like_path(items[0]) {
+            warnings.push(format!(
+                "incorrect arguments, corrected to: `{cmd} [{trimmed}]`"
+            ));
+            // Re-parse as bracket form — path becomes search context
+            let bracket_args = format!("[{trimmed}]");
+            let syms = non_empty_items(&bracket_args);
+            if syms.is_empty() {
+                return;
+            }
+            // The first item resolved as a path provides search_dir
+            let resolved_path = resolve_file(cd_dir, items[0]);
+            let path = Path::new(&resolved_path);
+            let dir = if path.extension().is_some() {
+                path.parent().map(|p| p.display().to_string())
+            } else {
+                Some(resolved_path.clone())
+            };
+            let search_dir = dir.or_else(|| {
+                if cd_dir.as_os_str().is_empty() {
+                    None
+                } else {
+                    Some(cd_dir.display().to_string())
+                }
+            });
+            // Symbol names are everything after the path
+            let symbol_names: Vec<String> = items[1..].iter().map(|s| s.to_string()).collect();
+            push_symbol_op(ops, cmd, symbol_names, search_dir);
+            return;
+        }
         if items.len() > 1 {
             warnings.push(format!(
                 "command `{cmd} {trimmed}` was used without brackets — \
@@ -149,6 +188,7 @@ pub fn handle_symbol_cmd(
             ));
         }
     }
+
     let syms = non_empty_items(args);
     if syms.is_empty() {
         return;
@@ -158,39 +198,59 @@ pub fn handle_symbol_cmd(
     } else {
         Some(cd_dir.display().to_string())
     };
+    push_symbol_op(ops, cmd, syms, search_dir);
+}
+
+/// Check if a string looks like a file path (contains `/` or has a source extension).
+fn looks_like_path(s: &str) -> bool {
+    if s.contains('/') {
+        return true;
+    }
+    if let Some(ext) = Path::new(s).extension().and_then(|e| e.to_str()) {
+        return SOURCE_EXTS.contains(&ext);
+    }
+    false
+}
+
+fn push_symbol_op(
+    ops: &mut Vec<Operation>,
+    cmd: &str,
+    symbol_names: Vec<String>,
+    search_dir: Option<String>,
+) {
     let op = match cmd {
         "body" => Operation::Body {
-            symbol_names: syms,
+            symbol_names,
             language: None,
             search_dir,
         },
         "definition" => Operation::Definition {
-            symbol_names: syms,
+            symbol_names,
             language: None,
             search_dir,
         },
         "references" => Operation::References {
-            symbol_names: syms,
+            symbol_names,
             language: None,
             search_dir,
         },
         "docstring" => Operation::Docstring {
-            symbol_names: syms,
+            symbol_names,
             language: None,
             search_dir,
         },
         "impls" => Operation::Impls {
-            symbol_names: syms,
+            symbol_names,
             language: None,
             search_dir,
         },
         "callers" => Operation::Callers {
-            symbol_names: syms,
+            symbol_names,
             language: None,
             search_dir,
         },
         "callees" => Operation::Callees {
-            symbol_names: syms,
+            symbol_names,
             language: None,
             search_dir,
         },

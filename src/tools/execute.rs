@@ -7,10 +7,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::background::BackgroundManager;
+use crate::config::LengthLimits;
 use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
 
-use super::edit::{self, PendingEdits};
+use super::edit::{self, PendingEdits, UndoStore};
 use super::execute_lsp;
 use super::operation::{Operation, OperationResult};
 use super::{grep, list_dir, process_ops, read_file, task_ops, workspace};
@@ -23,6 +24,8 @@ pub async fn execute_batch(
     workspace_root: &Path,
     operations: Vec<Operation>,
     pending_edits: &PendingEdits,
+    undo_store: &UndoStore,
+    limits: LengthLimits,
 ) -> Vec<OperationResult> {
     let futures: Vec<_> = operations
         .into_iter()
@@ -32,7 +35,10 @@ pub async fn execute_batch(
             let bg = background.clone();
             let ws = workspace_root.to_path_buf();
             let pe = pending_edits.clone();
-            tokio::spawn(async move { execute_one(&manager, &bus, bg, &ws, op, &pe).await })
+            let us = undo_store.clone();
+            tokio::spawn(async move {
+                execute_one(&manager, &bus, bg, &ws, op, &pe, &us, &limits).await
+            })
         })
         .collect();
 
@@ -58,6 +64,8 @@ async fn execute_one(
     workspace_root: &Path,
     op: Operation,
     pending_edits: &PendingEdits,
+    undo_store: &UndoStore,
+    limits: &LengthLimits,
 ) -> OperationResult {
     match &op {
         // LSP: symbol-based
@@ -164,6 +172,8 @@ async fn execute_one(
                     symbol_name,
                     new_content,
                     pending_edits,
+                    undo_store,
+                    limits,
                 )
                 .await
                 {
@@ -181,6 +191,8 @@ async fn execute_one(
             } else {
                 let clients = manager.resolve(None, Some(path));
                 let pe = pending_edits.clone();
+                let us = undo_store.clone();
+                let lim = *limits;
                 execute_on_first("edit", clients, |client| {
                     let types = parsed_types.clone();
                     let p = path.clone();
@@ -188,9 +200,20 @@ async fn execute_one(
                     let content = new_content.clone();
                     let sd = search_dir.clone();
                     let pe = pe.clone();
+                    let us = us.clone();
                     async move {
-                        edit::execute_edit(&client, &types, &p, &sym, &content, sd.as_deref(), &pe)
-                            .await
+                        edit::execute_edit(
+                            &client,
+                            &types,
+                            &p,
+                            &sym,
+                            &content,
+                            sd.as_deref(),
+                            &pe,
+                            &us,
+                            &lim,
+                        )
+                        .await
                     }
                 })
                 .await
@@ -201,17 +224,105 @@ async fn execute_one(
             edit_id,
             path,
             symbol_name,
+            edit_types,
         } => {
             use super::exec_helpers::execute_on_first;
 
-            let clients = manager.resolve(None, Some(path));
+            // Parse edit_types override if provided
+            let types_override: Option<Vec<edit::EditType>> = edit_types.as_ref().map(|ts| {
+                ts.iter()
+                    .filter_map(|t| edit::EditType::from_str(t))
+                    .collect()
+            });
+
+            // Determine which path to use for LSP client resolution.
+            // Prefer the override path, then look up stored pending edit path.
+            let resolve_path = if let Some(ref p) = path {
+                Some(p.clone())
+            } else {
+                // Peek at stored pending edit for the path
+                let map = pending_edits.lock().await;
+                map.get(edit_id.as_str()).map(|pe| pe.path.clone())
+            };
+
+            let resolve_ref = resolve_path.as_deref().unwrap_or("");
+            let clients = manager.resolve(None, Some(resolve_ref));
             let pe = pending_edits.clone();
+            let us = undo_store.clone();
+
+            let lim = *limits;
             execute_on_first("apply_edit", clients, |client| {
                 let id = edit_id.clone();
                 let p = path.clone();
                 let sym = symbol_name.clone();
+                let to = types_override.clone();
                 let pe = pe.clone();
-                async move { edit::apply_pending_edit(&client, &id, &p, &sym, &pe).await }
+                let us = us.clone();
+                async move {
+                    edit::apply_pending_edit(
+                        &client,
+                        &id,
+                        p.as_deref(),
+                        sym.as_deref(),
+                        to.as_deref(),
+                        &pe,
+                        &us,
+                        &lim,
+                    )
+                    .await
+                }
+            })
+            .await
+        }
+
+        Operation::Undo { undo_id } => match edit::execute_undo(undo_id, undo_store).await {
+            Ok(output) => OperationResult {
+                operation: "undo".into(),
+                success: true,
+                output,
+            },
+            Err(e) => OperationResult {
+                operation: "undo".into(),
+                success: false,
+                output: format!("undo failed: {e}"),
+            },
+        },
+
+        Operation::EditRange {
+            path,
+            symbol_name,
+            before_ctx,
+            after_ctx,
+            new_content,
+            search_dir,
+        } => {
+            use super::exec_helpers::execute_on_first;
+
+            let clients = manager.resolve(None, Some(path));
+            let us = undo_store.clone();
+            let lim = *limits;
+            execute_on_first("edit_range", clients, |client| {
+                let p = path.clone();
+                let sym = symbol_name.clone();
+                let bc = before_ctx.clone();
+                let ac = after_ctx.clone();
+                let content = new_content.clone();
+                let sd = search_dir.clone();
+                let us = us.clone();
+                async move {
+                    edit::execute_edit_range(
+                        &client,
+                        &p,
+                        &sym,
+                        bc.as_deref(),
+                        ac.as_deref(),
+                        &content,
+                        sd.as_deref(),
+                        &us,
+                        &lim,
+                    )
+                    .await
+                }
             })
             .await
         }

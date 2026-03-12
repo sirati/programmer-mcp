@@ -68,6 +68,31 @@ pub struct Config {
     /// Disabled by default for safety.
     #[arg(long, default_value_t = false)]
     pub allow_file_edit: bool,
+
+    /// Suggested max file length in non-empty lines (warning printed after edit).
+    #[arg(long, default_value_t = 500)]
+    pub file_length_suggest: usize,
+
+    /// Hard max file length in non-empty lines (warning printed after edit).
+    #[arg(long, default_value_t = 1000)]
+    pub file_length_hard: usize,
+
+    /// Suggested max function length in non-empty lines (warning printed after edit).
+    #[arg(long, default_value_t = 80)]
+    pub fn_length_suggest: usize,
+
+    /// Hard max function length in non-empty lines (warning printed after edit).
+    #[arg(long, default_value_t = 200)]
+    pub fn_length_hard: usize,
+}
+
+/// Length limits for files and functions (non-empty lines).
+#[derive(Debug, Clone, Copy)]
+pub struct LengthLimits {
+    pub file_suggest: usize,
+    pub file_hard: usize,
+    pub fn_suggest: usize,
+    pub fn_hard: usize,
 }
 
 impl Config {
@@ -102,6 +127,16 @@ impl Config {
         }
 
         Ok(config)
+    }
+
+    /// Build length limits from the CLI args.
+    pub fn length_limits(&self) -> LengthLimits {
+        LengthLimits {
+            file_suggest: self.file_length_suggest,
+            file_hard: self.file_length_hard,
+            fn_suggest: self.fn_length_suggest,
+            fn_hard: self.fn_length_hard,
+        }
     }
 
     /// Get the validated workspace path. Panics if called without workspace.

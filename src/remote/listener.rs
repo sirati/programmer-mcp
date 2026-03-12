@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use rmcp::{ServerHandler, ServiceExt};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 /// Listens on a Unix socket for remote session requests.
@@ -13,6 +14,7 @@ use tracing::{debug, error, info, warn};
 pub struct RemoteListener {
     control_path: PathBuf,
     socket_dir: PathBuf,
+    task: Option<JoinHandle<()>>,
 }
 
 impl RemoteListener {
@@ -21,57 +23,69 @@ impl RemoteListener {
         Self {
             control_path,
             socket_dir,
+            task: None,
         }
     }
 
     /// Start listening for remote session requests. This spawns a background task.
     /// `server` is cloned for each new session.
-    pub fn start<S>(self, server: S)
+    pub fn start<S>(&mut self, server: S)
     where
         S: ServerHandler + Clone + Send + Sync + 'static,
     {
-        tokio::spawn(async move {
-            if let Err(e) = self.listen_loop(server).await {
+        let control_path = self.control_path.clone();
+        let socket_dir = self.socket_dir.clone();
+        let handle = tokio::spawn(async move {
+            if let Err(e) = listen_loop(&control_path, &socket_dir, server).await {
                 error!("remote listener error: {e}");
             }
         });
+        self.task = Some(handle);
     }
 
-    async fn listen_loop<S>(&self, server: S) -> anyhow::Result<()>
-    where
-        S: ServerHandler + Clone + Send + Sync + 'static,
-    {
-        // Ensure socket directory exists
-        std::fs::create_dir_all(&self.socket_dir)?;
-
-        // Clean up stale control socket
-        let _ = std::fs::remove_file(&self.control_path);
-
-        let listener = UnixListener::bind(&self.control_path)?;
-        info!(path = %self.control_path.display(), "remote control socket listening");
-
-        loop {
-            match listener.accept().await {
-                Ok((stream, _)) => {
-                    let srv = server.clone();
-                    let socket_dir = self.socket_dir.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_session_request(stream, &socket_dir, srv).await {
-                            warn!("session request error: {e}");
-                        }
-                    });
-                }
-                Err(e) => {
-                    warn!("remote accept error: {e}");
-                }
-            }
+    /// Shut down the listener and abort any spawned tasks.
+    pub fn shutdown(&mut self) {
+        if let Some(handle) = self.task.take() {
+            handle.abort();
         }
+        let _ = std::fs::remove_file(&self.control_path);
     }
 }
 
 impl Drop for RemoteListener {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.control_path);
+        self.shutdown();
+    }
+}
+
+async fn listen_loop<S>(control_path: &Path, socket_dir: &Path, server: S) -> anyhow::Result<()>
+where
+    S: ServerHandler + Clone + Send + Sync + 'static,
+{
+    // Ensure socket directory exists
+    std::fs::create_dir_all(socket_dir)?;
+
+    // Clean up stale control socket
+    let _ = std::fs::remove_file(control_path);
+
+    let listener = UnixListener::bind(control_path)?;
+    info!(path = %control_path.display(), "remote control socket listening");
+
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                let srv = server.clone();
+                let sd = socket_dir.to_path_buf();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_session_request(stream, &sd, srv).await {
+                        warn!("session request error: {e}");
+                    }
+                });
+            }
+            Err(e) => {
+                warn!("remote accept error: {e}");
+            }
+        }
     }
 }
 
@@ -136,9 +150,10 @@ where
 
     // Serve MCP on the bidirectional socket
     let (read_half, write_half) = tokio::io::split(session_stream);
-    let service = server.serve((read_half, write_half)).await.map_err(|e| {
-        anyhow::anyhow!("failed to serve remote session {session_id}: {e}")
-    })?;
+    let service = server
+        .serve((read_half, write_half))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to serve remote session {session_id}: {e}"))?;
 
     // Run in background - when the session ends, clean up
     let sp = session_path.clone();

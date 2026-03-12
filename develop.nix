@@ -2,7 +2,10 @@
 
 let
   rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-    extensions = [ "rust-src" "rust-analyzer" ];
+    extensions = [
+      "rust-src"
+      "rust-analyzer"
+    ];
   };
 
   nixPackages = with pkgs; [
@@ -34,7 +37,9 @@ let
     shfmt
     bash-language-server
     package-version-server
-    go gopls
+    go
+    gopls
+    basedpyright
   ];
 
   shell = pkgs.mkShell {

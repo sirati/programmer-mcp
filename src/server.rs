@@ -8,10 +8,11 @@ use rmcp::{
 };
 
 use crate::background::BackgroundManager;
+use crate::config::LengthLimits;
 use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
 use crate::tools::diagnostics_cache::DiagnosticsCache;
-use crate::tools::edit::PendingEdits;
+use crate::tools::edit::{PendingEdits, UndoStore};
 use crate::tools::{self, OperationResult};
 
 /// The batch request: a DSL script of commands to execute.
@@ -83,7 +84,9 @@ pub struct ProgrammerServer {
     workspace_root: PathBuf,
     diag_cache: Arc<DiagnosticsCache>,
     pending_edits: PendingEdits,
+    undo_store: UndoStore,
     allow_file_edit: bool,
+    length_limits: LengthLimits,
     tool_router: ToolRouter<Self>,
 }
 
@@ -96,6 +99,7 @@ impl ProgrammerServer {
         workspace_root: PathBuf,
         diag_cache: Arc<DiagnosticsCache>,
         allow_file_edit: bool,
+        length_limits: LengthLimits,
     ) -> Self {
         Self {
             manager,
@@ -104,7 +108,9 @@ impl ProgrammerServer {
             workspace_root,
             diag_cache,
             pending_edits: crate::tools::edit::new_pending_edits(),
+            undo_store: crate::tools::edit::new_undo_store(),
             allow_file_edit,
+            length_limits,
             tool_router: Self::tool_router(),
         }
     }
@@ -156,7 +162,13 @@ impl ProgrammerServer {
           edit signature path/file.rs symbol_name <new sig>\n\
           edit docs path/file.rs symbol_name <new docs>\n\
           edit body,docs path/file.rs sym <content>  # multiple types\n\
-          apply_edit <id> path/file.rs symbol_name   # after disambiguation\n\n\
+          apply_edit <id>                             # confirm with stored args\n\
+          apply_edit <id> [signature body]             # override edit types\n\
+          apply_edit <id> path/file.rs symbol_name     # correct location\n\
+          undo <id>                                    # revert an applied edit\n\
+          edit_range path sym <<<before>>> new <<<after>>>  # targeted range edit\n\
+          edit_range path sym new <<<after>>>               # from body start to anchor\n\
+          edit_range path sym <<<before>>> new              # from anchor to body end\n\n\
         REFACTORING:\n\
           code_actions src/main.rs 42 10    # list available actions\n\
           code_actions 42 10                # uses current cd file\n\
@@ -182,6 +194,8 @@ impl ProgrammerServer {
             &self.workspace_root,
             parsed.operations,
             &self.pending_edits,
+            &self.undo_store,
+            self.length_limits,
         )
         .await;
 
@@ -199,6 +213,11 @@ impl ProgrammerServer {
 
         output.push_str(&format_results(&results));
         let any_error = results.iter().any(|r| !r.success);
+
+        // Nudge callers to batch commands when only one was sent
+        if results.len() == 1 {
+            output.push_str("\nPlease always batch multiple commands together.\n");
+        }
 
         // Append any pending auto-diagnostics
         if let Some(diag_report) = self.diag_cache.take_pending().await {

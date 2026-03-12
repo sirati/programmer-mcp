@@ -15,7 +15,8 @@ fn nix_pkg_for_command(command: &str) -> Option<&'static str> {
     match command {
         "rust-analyzer" => Some("rust-analyzer"),
         "gopls" => Some("gopls"),
-        "pyright" => Some("pyright"),
+        "pyright" | "pyright-langserver" => Some("pyright"),
+        "basedpyright" | "basedpyright-langserver" => Some("basedpyright"),
         "pylsp" | "pylsp-all" => Some("python3Packages.python-lsp-server"),
         "ruff-lsp" => Some("ruff-lsp"),
         "ruff" => Some("ruff"),

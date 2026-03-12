@@ -192,12 +192,43 @@ pub enum Operation {
         search_dir: Option<String>,
     },
     /// Apply a pending edit after disambiguation.
+    ///
+    /// Forms:
+    /// - `apply_edit <id>` — confirm with stored args
+    /// - `apply_edit <id> [types]` — override edit types, keep stored path/symbol
+    /// - `apply_edit <id> <path> <symbol>` — correct location
     ApplyEdit {
         #[serde(rename = "editId")]
         edit_id: String,
-        path: String,
+        /// Override path (None = use stored).
+        path: Option<String>,
+        /// Override symbol (None = use stored).
         #[serde(rename = "symbolName")]
+        symbol_name: Option<String>,
+        /// Override edit types (None = use stored).
+        #[serde(rename = "editTypes")]
+        edit_types: Option<Vec<String>>,
+    },
+    /// Undo a previously applied edit.
+    Undo {
+        #[serde(rename = "undoId")]
+        undo_id: String,
+    },
+    /// Targeted range edit within a symbol using before/after context anchors.
+    EditRange {
+        path: String,
+        #[serde(rename = "symbolName", default)]
         symbol_name: String,
+        /// Context lines before the region to replace (None = from start).
+        #[serde(rename = "beforeCtx")]
+        before_ctx: Option<String>,
+        /// Context lines after the region to replace (None = to end).
+        #[serde(rename = "afterCtx")]
+        after_ctx: Option<String>,
+        #[serde(rename = "newContent")]
+        new_content: String,
+        #[serde(rename = "searchDir", skip)]
+        search_dir: Option<String>,
     },
     /// Send a raw LSP request (for debugging/development).
     RawLspRequest {

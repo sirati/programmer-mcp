@@ -193,7 +193,18 @@ impl DslContext {
 
             // editing
             "edit" => handle_edit(ops, warnings, args, &self.cd_dir, self.allow_file_edit),
+            "edit_range" => handle_edit_range(ops, warnings, args, &self.cd_dir),
             "apply_edit" => handle_apply_edit(ops, warnings, args, &self.cd_dir),
+            "undo" => {
+                let id = args.trim();
+                if id.is_empty() {
+                    warnings.push("undo: requires an undo ID".into());
+                } else {
+                    ops.push(Operation::Undo {
+                        undo_id: id.to_string(),
+                    });
+                }
+            }
 
             // refactoring
             "code_actions" => handle_code_actions(ops, args, &self.cd_dir, self.cd_file.as_deref()),
