@@ -1,4 +1,6 @@
+pub mod code_action;
 pub mod definition;
+pub mod diag_cache;
 pub mod diagnostics;
 pub mod dsl;
 pub mod exec_helpers;
@@ -17,6 +19,7 @@ pub mod symbol_list;
 pub mod symbol_match;
 pub mod symbol_search;
 pub mod task_ops;
+pub mod workspace_info;
 
 pub use execute::execute_batch;
 pub use operation::{Operation, OperationResult};

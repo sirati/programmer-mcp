@@ -1,1 +1,5 @@
-lsp = ["rust:rust-analyzer"]
+lsp = [
+    "rust:rust-analyzer",
+    "nix:nil",
+    "nix:nixd",
+]

@@ -6,10 +6,16 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 use crate::lsp::manager::LspManager;
+use crate::tools::diag_cache::DiagCache;
 use crate::tools::formatting::path_to_uri;
 
 /// Watch workspace for file changes and notify LSP servers.
-pub async fn watch_workspace(manager: Arc<LspManager>, workspace: &Path) {
+/// Also triggers background diagnostics collection into the cache.
+pub async fn watch_workspace(
+    manager: Arc<LspManager>,
+    diag_cache: Arc<DiagCache>,
+    workspace: &Path,
+) {
     let (tx, mut rx) = mpsc::channel::<Event>(256);
 
     let mut watcher = match notify::recommended_watcher(move |res: Result<Event, _>| {
@@ -73,6 +79,32 @@ pub async fn watch_workspace(manager: Arc<LspManager>, workspace: &Path) {
                             }
                         }
                     }
+                }
+
+                // Collect diagnostics for changed files after a brief delay
+                let dc = diag_cache.clone();
+                let mgr = manager.clone();
+                let changed_paths: Vec<String> = changes
+                    .iter()
+                    .filter(|c| c.typ != lsp_types::FileChangeType::DELETED)
+                    .filter_map(|c| c.uri.as_str().strip_prefix("file://").map(String::from))
+                    .collect();
+
+                if !changed_paths.is_empty() {
+                    tokio::spawn(async move {
+                        // Wait for LSP to process the change
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        for path in &changed_paths {
+                            for client in mgr.all() {
+                                let uri = match path_to_uri(path) {
+                                    Ok(u) => u,
+                                    Err(_) => continue,
+                                };
+                                let diags = client.get_cached_diagnostics(&uri).await;
+                                dc.update(path, diags).await;
+                            }
+                        }
+                    });
                 }
             }
             _ => {}

@@ -22,6 +22,7 @@ use config::Config;
 use debug::server::DebugServer;
 use lsp::manager::LspManager;
 use server::ProgrammerServer;
+use tools::diag_cache::DiagCache;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -151,16 +152,18 @@ async fn run_normal_server(config: Config) -> anyhow::Result<()> {
     let manager = Arc::new(LspManager::start(&config.lsp_specs, &workspace).await?);
     let message_bus = ipc::HumanMessageBus::start(&workspace);
     let background = BackgroundManager::new(&workspace);
+    let diag_cache = DiagCache::new(&workspace);
 
     let watcher_manager = manager.clone();
+    let watcher_cache = diag_cache.clone();
     let watcher_workspace = workspace.clone();
     tokio::spawn(async move {
-        watcher::watch_workspace(watcher_manager, &watcher_workspace).await;
+        watcher::watch_workspace(watcher_manager, watcher_cache, &watcher_workspace).await;
     });
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let mcp_server = ProgrammerServer::new(manager.clone(), message_bus, background);
+    let mcp_server = ProgrammerServer::new(manager.clone(), message_bus, background, diag_cache);
 
     // Start remote listener for SSH-based sessions
     let remote_listener = remote::RemoteListener::new(config.socket_path());

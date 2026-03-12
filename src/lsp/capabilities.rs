@@ -1,11 +1,11 @@
 //! LSP client capability declaration.
 
 use lsp_types::{
-    ClientCapabilities, DidChangeWatchedFilesClientCapabilities, DocumentSymbolClientCapabilities,
-    DynamicRegistrationClientCapabilities, GotoCapability, HoverClientCapabilities,
-    PublishDiagnosticsClientCapabilities, RenameClientCapabilities, TextDocumentClientCapabilities,
-    TextDocumentSyncClientCapabilities, WorkspaceClientCapabilities,
-    WorkspaceSymbolClientCapabilities,
+    ClientCapabilities, CodeActionClientCapabilities, DidChangeWatchedFilesClientCapabilities,
+    DocumentSymbolClientCapabilities, DynamicRegistrationClientCapabilities, GotoCapability,
+    HoverClientCapabilities, PublishDiagnosticsClientCapabilities, RenameClientCapabilities,
+    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities,
+    WorkspaceClientCapabilities, WorkspaceSymbolClientCapabilities,
 };
 
 /// Build the `ClientCapabilities` advertised to LSP servers on initialization.
@@ -55,6 +55,10 @@ pub fn build_client_capabilities() -> ClientCapabilities {
                 dynamic_registration: Some(true),
             }),
             definition: Some(GotoCapability {
+                dynamic_registration: Some(true),
+                ..Default::default()
+            }),
+            code_action: Some(CodeActionClientCapabilities {
                 dynamic_registration: Some(true),
                 ..Default::default()
             }),

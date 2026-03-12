@@ -162,6 +162,29 @@ pub enum Operation {
         /// Trigger name to wait for
         name: String,
     },
+    /// Request code actions (refactorings, quick-fixes) at a position
+    CodeAction {
+        /// Path to the file
+        #[serde(rename = "filePath")]
+        file_path: String,
+        /// Line number (1-indexed)
+        line: u32,
+        /// Column number (1-indexed)
+        column: u32,
+        /// End line (1-indexed, defaults to same as line)
+        #[serde(rename = "endLine")]
+        end_line: Option<u32>,
+        /// End column (1-indexed, defaults to same as column)
+        #[serde(rename = "endColumn")]
+        end_column: Option<u32>,
+        /// Optional: only return actions of these kinds (e.g. "refactor", "quickfix")
+        #[serde(default)]
+        kinds: Vec<String>,
+        /// Optional language to target a specific LSP
+        language: Option<String>,
+    },
+    /// Show workspace structure: sub-projects, standalone files
+    WorkspaceInfo,
     /// Block until a human sends a message via the Unix socket IPC.
     RequestHumanMessage,
     /// Create or replace a named task

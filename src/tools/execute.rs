@@ -13,7 +13,10 @@ use crate::lsp::manager::LspManager;
 use super::exec_helpers::{execute_multi_symbol, execute_on_first};
 use super::json_util::{format_compact_json, strip_json_noise};
 use super::operation::{Operation, OperationResult};
-use super::{definition, diagnostics, hover, impls, references, rename, symbol_info, symbol_list};
+use super::{
+    code_action, definition, diagnostics, hover, impls, references, rename, symbol_info,
+    symbol_list, workspace_info,
+};
 use super::{process_ops, task_ops};
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -184,6 +187,35 @@ async fn execute_one(
             })
             .await
         }
+
+        Operation::CodeAction {
+            file_path,
+            line,
+            column,
+            end_line,
+            end_column,
+            kinds,
+            language,
+        } => {
+            let clients = manager.resolve(language.as_deref(), Some(&file_path));
+            execute_on_first("code_action", clients, |client| {
+                let path = file_path.clone();
+                let ks = kinds.clone();
+                async move {
+                    code_action::get_code_actions(
+                        &client, &path, line, column, end_line, end_column, &ks,
+                    )
+                    .await
+                }
+            })
+            .await
+        }
+
+        Operation::WorkspaceInfo => OperationResult {
+            operation: "workspace_info".into(),
+            success: true,
+            output: workspace_info::collect_workspace_info(),
+        },
 
         // ── LSP: raw request ──────────────────────────────────────────────────
         Operation::RawLspRequest {

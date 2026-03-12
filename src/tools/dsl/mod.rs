@@ -76,13 +76,20 @@ use crate::tools::Operation;
 use ops::{has_extension, normalize_path, resolve_cd_path, *};
 use parse::{split_first_word, strip_comment};
 
+/// Result of parsing a DSL script: operations to execute and any warnings.
+pub struct ParseResult {
+    pub operations: Vec<Operation>,
+    pub warnings: Vec<String>,
+}
+
 /// Parse a DSL command script into a list of operations.
 ///
 /// Lines are processed in order. `cd` commands update the current path
 /// context used by subsequent file-based operations.
 /// All operations are collected and returned for concurrent execution.
-pub fn parse_dsl(commands: &str) -> Vec<Operation> {
+pub fn parse_dsl(commands: &str) -> ParseResult {
     let mut ops = Vec::new();
+    let mut warnings = Vec::new();
     let mut ctx = DslContext::default();
 
     for line in commands.lines() {
@@ -91,10 +98,13 @@ pub fn parse_dsl(commands: &str) -> Vec<Operation> {
             continue;
         }
         let (cmd, args) = split_first_word(line);
-        ctx.dispatch(&mut ops, cmd, args);
+        ctx.dispatch(&mut ops, &mut warnings, cmd, args);
     }
 
-    ops
+    ParseResult {
+        operations: ops,
+        warnings,
+    }
 }
 
 // ── parsing context ───────────────────────────────────────────────────────────
@@ -108,7 +118,13 @@ struct DslContext {
 }
 
 impl DslContext {
-    fn dispatch(&mut self, ops: &mut Vec<Operation>, cmd: &str, args: &str) {
+    fn dispatch(
+        &mut self,
+        ops: &mut Vec<Operation>,
+        warnings: &mut Vec<String>,
+        cmd: &str,
+        args: &str,
+    ) {
         match cmd {
             "cd" => self.handle_cd(args),
 
@@ -119,13 +135,17 @@ impl DslContext {
             "rename_symbol" => {
                 handle_rename_symbol(ops, args, &self.cd_dir, self.cd_file.as_deref())
             }
+            "code_action" => handle_code_action(ops, args, &self.cd_dir, self.cd_file.as_deref()),
 
-            // symbol-based
-            "body" => handle_body(ops, args),
-            "definition" => handle_definition(ops, args),
-            "references" => handle_references(ops, args),
-            "docstring" => handle_docstring(ops, args),
-            "impls" => handle_impls(ops, args),
+            // symbol-based (with bare-arg warnings)
+            "body" => handle_symbol_cmd(ops, warnings, "body", args),
+            "definition" => handle_symbol_cmd(ops, warnings, "definition", args),
+            "references" => handle_symbol_cmd(ops, warnings, "references", args),
+            "docstring" => handle_symbol_cmd(ops, warnings, "docstring", args),
+            "impls" => handle_symbol_cmd(ops, warnings, "impls", args),
+
+            // workspace
+            "workspace_info" | "workspace-info" => ops.push(Operation::WorkspaceInfo),
 
             // tasks
             "set_task" => handle_set_task(ops, args),
@@ -146,8 +166,10 @@ impl DslContext {
             // misc
             "request_human_message" => ops.push(Operation::RequestHumanMessage),
 
-            // unknown → silently skip (forward-compat)
-            _ => {}
+            // unknown
+            other => {
+                warnings.push(format!("unknown command: {other}"));
+            }
         }
     }
 
@@ -181,9 +203,9 @@ mod tests {
 
     #[test]
     fn test_cd_and_list_symbols() {
-        let ops = parse_dsl("cd src/debug\nlist_symbols [server.rs]");
-        assert_eq!(ops.len(), 1);
-        match &ops[0] {
+        let parsed = parse_dsl("cd src/debug\nlist_symbols [server.rs]");
+        assert_eq!(parsed.operations.len(), 1);
+        match &parsed.operations[0] {
             Operation::ListSymbols { file_path, .. } => {
                 assert_eq!(file_path, "src/debug/server.rs");
             }
@@ -193,9 +215,9 @@ mod tests {
 
     #[test]
     fn test_cd_file_then_list_symbols() {
-        let ops = parse_dsl("cd src/debug/server.rs\nlist_symbols");
-        assert_eq!(ops.len(), 1);
-        match &ops[0] {
+        let parsed = parse_dsl("cd src/debug/server.rs\nlist_symbols");
+        assert_eq!(parsed.operations.len(), 1);
+        match &parsed.operations[0] {
             Operation::ListSymbols { file_path, .. } => {
                 assert_eq!(file_path, "src/debug/server.rs");
             }
@@ -205,9 +227,9 @@ mod tests {
 
     #[test]
     fn test_body() {
-        let ops = parse_dsl("body [relay_command show_help]");
-        assert_eq!(ops.len(), 1);
-        match &ops[0] {
+        let parsed = parse_dsl("body [relay_command show_help]");
+        assert_eq!(parsed.operations.len(), 1);
+        match &parsed.operations[0] {
             Operation::Body { symbol_names, .. } => {
                 assert_eq!(symbol_names, &["relay_command", "show_help"]);
             }
@@ -216,16 +238,25 @@ mod tests {
     }
 
     #[test]
+    fn test_body_bare_args_warns() {
+        let parsed = parse_dsl("body foo bar baz");
+        assert_eq!(parsed.operations.len(), 1);
+        assert_eq!(parsed.warnings.len(), 1);
+        assert!(parsed.warnings[0].contains("without brackets"));
+    }
+
+    #[test]
     fn test_comments_stripped() {
-        let ops = parse_dsl("# this is a comment\nbody [foo] # inline");
-        assert_eq!(ops.len(), 1);
+        let parsed = parse_dsl("# this is a comment\nbody [foo] # inline");
+        assert_eq!(parsed.operations.len(), 1);
     }
 
     #[test]
     fn test_brace_expansion_in_list_symbols() {
-        let ops = parse_dsl("cd src\nlist_symbols [tools/{mod.rs symbol_list.rs}]");
-        assert_eq!(ops.len(), 2);
-        let paths: Vec<_> = ops
+        let parsed = parse_dsl("cd src\nlist_symbols [tools/{mod.rs symbol_list.rs}]");
+        assert_eq!(parsed.operations.len(), 2);
+        let paths: Vec<_> = parsed
+            .operations
             .iter()
             .filter_map(|op| {
                 if let Operation::ListSymbols { file_path, .. } = op {
@@ -237,5 +268,13 @@ mod tests {
             .collect();
         assert!(paths.contains(&"src/tools/mod.rs"));
         assert!(paths.contains(&"src/tools/symbol_list.rs"));
+    }
+
+    #[test]
+    fn test_unknown_command_warns() {
+        let parsed = parse_dsl("foobar something");
+        assert!(parsed.operations.is_empty());
+        assert_eq!(parsed.warnings.len(), 1);
+        assert!(parsed.warnings[0].contains("unknown command: foobar"));
     }
 }

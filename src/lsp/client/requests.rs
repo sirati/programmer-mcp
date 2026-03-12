@@ -160,6 +160,42 @@ impl LspClient {
         Ok(())
     }
 
+    pub async fn code_action(
+        &self,
+        uri: &Uri,
+        range: lsp_types::Range,
+        only: Option<Vec<lsp_types::CodeActionKind>>,
+    ) -> Result<Option<Vec<lsp_types::CodeActionOrCommand>>, LspClientError> {
+        let diagnostics = self.get_cached_diagnostics(uri).await;
+        // Filter diagnostics that overlap the range
+        let relevant_diags: Vec<_> = diagnostics
+            .into_iter()
+            .filter(|d| ranges_overlap(&d.range, &range))
+            .collect();
+
+        let params = lsp_types::CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range,
+            context: lsp_types::CodeActionContext {
+                diagnostics: relevant_diags,
+                only,
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result: Option<Vec<lsp_types::CodeActionOrCommand>> = self
+            .rpc
+            .request(
+                lsp_types::request::CodeActionRequest::METHOD,
+                RpcParams(params),
+            )
+            .await?;
+
+        Ok(result)
+    }
+
     /// Send an arbitrary LSP request and return the raw JSON response.
     pub async fn raw_request(
         &self,
@@ -169,4 +205,8 @@ impl LspClient {
         let result: serde_json::Value = self.rpc.request(method, RpcParams(params)).await?;
         Ok(result)
     }
+}
+
+fn ranges_overlap(a: &lsp_types::Range, b: &lsp_types::Range) -> bool {
+    a.start <= b.end && b.start <= a.end
 }

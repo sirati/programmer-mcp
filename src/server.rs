@@ -9,6 +9,7 @@ use rmcp::{
 use crate::background::BackgroundManager;
 use crate::ipc::HumanMessageBus;
 use crate::lsp::manager::LspManager;
+use crate::tools::diag_cache::DiagCache;
 use crate::tools::{self, OperationResult};
 
 /// The batch request: a DSL script of commands to execute.
@@ -25,6 +26,7 @@ pub struct ExecuteRequest {
     ///   diagnostics [f1 f2]       — errors/warnings for files
     ///   hover <file> <line> <col> — hover info at position (file optional if cd'd)
     ///   rename_symbol <file> <line> <col> <new_name>
+    ///   code_action <file> <line> <col> [end_line end_col] [kind1 kind2]
     ///
     /// Symbol-based operations:
     ///   body        [sym1 sym2]   — source body of symbols
@@ -53,6 +55,9 @@ pub struct ExecuteRequest {
     ///   define_trigger <name> <pattern> [before=N] [after=N] [timeout=N] [group=g]
     ///   await_trigger <name>
     ///
+    /// Workspace:
+    ///   workspace_info            — show sub-projects, workspaces, standalone files
+    ///
     /// Misc:
     ///   request_human_message
     pub commands: String,
@@ -63,6 +68,7 @@ pub struct ProgrammerServer {
     manager: Arc<LspManager>,
     message_bus: Arc<HumanMessageBus>,
     background: Arc<BackgroundManager>,
+    diag_cache: Arc<DiagCache>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -72,11 +78,13 @@ impl ProgrammerServer {
         manager: Arc<LspManager>,
         message_bus: Arc<HumanMessageBus>,
         background: Arc<BackgroundManager>,
+        diag_cache: Arc<DiagCache>,
     ) -> Self {
         Self {
             manager,
             message_bus,
             background,
+            diag_cache,
             tool_router: Self::tool_router(),
         }
     }
@@ -95,7 +103,9 @@ impl ProgrammerServer {
           diagnostics [server.rs]\n\
           hover src/main.rs 42 10\n\
           hover 42 10                      # uses current cd file\n\
-          rename_symbol src/main.rs 42 10 new_name\n\n\
+          rename_symbol src/main.rs 42 10 new_name\n\
+          code_action src/main.rs 42 10    # code actions at position\n\
+          code_action 42 10 50 15 refactor # range + kind filter\n\n\
         SYMBOL-BASED OPS:\n\
           body        [relay_command show_help]\n\
           definition  [MyStruct MyStruct.method]\n\
@@ -121,6 +131,8 @@ impl ProgrammerServer {
           search_output myproc error\n\
           define_trigger t error [before=3] [after=5] [timeout=30000] [group=build]\n\
           await_trigger t\n\n\
+        WORKSPACE:\n\
+          workspace_info                   # show sub-projects & files\n\n\
         MISC:\n\
           request_human_message"
     )]
@@ -128,17 +140,36 @@ impl ProgrammerServer {
         &self,
         Parameters(request): Parameters<ExecuteRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let operations = tools::dsl::parse_dsl(&request.commands);
+        let parsed = tools::dsl::parse_dsl(&request.commands);
         let results = tools::execute_batch(
             &self.manager,
             &self.message_bus,
             &self.background,
-            operations,
+            parsed.operations,
         )
         .await;
 
-        let mut output = format_results(&results);
+        let mut output = String::new();
+
+        // Prepend DSL warnings
+        if !parsed.warnings.is_empty() {
+            for w in &parsed.warnings {
+                output.push_str("⚠ ");
+                output.push_str(w);
+                output.push('\n');
+            }
+            output.push('\n');
+        }
+
+        output.push_str(&format_results(&results));
         let any_error = results.iter().any(|r| !r.success);
+
+        // Append any pending background diagnostics
+        let pending_diags = self.diag_cache.take_pending().await;
+        for d in &pending_diags {
+            output.push_str("\n\n--- Background Diagnostics ---\n");
+            output.push_str(d);
+        }
 
         // Append any pending trigger results
         let pending_triggers = self.background.triggers.lock().await.take_pending();
