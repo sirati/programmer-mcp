@@ -140,7 +140,7 @@ async fn execute_one(
 
         // Workspace info
         Operation::WorkspaceInfo => {
-            let output = workspace::workspace_info(workspace_root);
+            let output = workspace::workspace_info(workspace_root, manager).await;
             OperationResult {
                 operation: "workspace_info".into(),
                 success: true,

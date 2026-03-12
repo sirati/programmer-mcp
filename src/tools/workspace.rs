@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::lsp::detect_lang::detect_language_id;
+use crate::lsp::manager::LspManager;
 
 /// Project markers and their human-readable type.
 const PROJECT_MARKERS: &[(&str, &str)] = &[
@@ -46,11 +47,11 @@ pub fn detect_subprojects(workspace_root: &Path) -> Vec<SubProject> {
     subprojects
 }
 
-/// Scan the workspace and return a formatted description of subprojects and standalone files.
-pub fn workspace_info(workspace_root: &Path) -> String {
+/// Scan the workspace and return a formatted description of subprojects, standalone files,
+/// and LSP status with symbol index stats.
+pub async fn workspace_info(workspace_root: &Path, manager: &LspManager) -> String {
     let subprojects = detect_subprojects(workspace_root);
     let mut standalone_by_dir: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    // Re-scan for standalone files (subprojects already collected)
     scan_recursive(
         workspace_root,
         workspace_root,
@@ -58,7 +59,39 @@ pub fn workspace_info(workspace_root: &Path) -> String {
         &mut standalone_by_dir,
         false,
     );
-    format_output(&subprojects, &standalone_by_dir)
+    let mut out = format_output(&subprojects, &standalone_by_dir);
+
+    // Append LSP status
+    let lsp_info = collect_lsp_status(manager).await;
+    if !lsp_info.is_empty() {
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(&lsp_info);
+    }
+
+    out
+}
+
+/// Collect LSP status information: language, symbol count.
+async fn collect_lsp_status(manager: &LspManager) -> String {
+    let clients: Vec<_> = manager.all().collect();
+    if clients.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("LSP servers:");
+    for client in &clients {
+        let lang = client.language();
+        let (_, symbols) = client.symbol_cache().stats().await;
+        let ws = if client.has_workspace_symbol() {
+            "workspace/symbol"
+        } else {
+            "documentSymbol"
+        };
+        let _ = write!(out, "\n  {lang}: {symbols} symbols indexed ({ws})");
+    }
+    out
 }
 
 /// Recursively scan directories for project markers and standalone source files.
