@@ -20,30 +20,41 @@ pub enum Operation {
         #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
         symbol_names: Vec<String>,
         language: Option<String>,
+        /// DSL cd context for directory-walk fallback when workspace_symbol fails.
+        #[serde(skip)]
+        search_dir: Option<String>,
     },
     /// Find all references to symbols.
     References {
         #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
         symbol_names: Vec<String>,
         language: Option<String>,
+        #[serde(skip)]
+        search_dir: Option<String>,
     },
     /// Get the doc comment/docstring of symbols.
     Docstring {
         #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
         symbol_names: Vec<String>,
         language: Option<String>,
+        #[serde(skip)]
+        search_dir: Option<String>,
     },
     /// Get the source body of symbols.
     Body {
         #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
         symbol_names: Vec<String>,
         language: Option<String>,
+        #[serde(skip)]
+        search_dir: Option<String>,
     },
     /// Find all impl blocks for a type (Rust-specific).
     Impls {
         #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
         symbol_names: Vec<String>,
         language: Option<String>,
+        #[serde(skip)]
+        search_dir: Option<String>,
     },
 
     // ── LSP: file-based ───────────────────────────────────────────────────

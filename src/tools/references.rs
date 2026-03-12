@@ -11,8 +11,9 @@ pub async fn find_references(
     client: &Arc<LspClient>,
     symbol_name: &str,
     context_lines: usize,
+    search_dir: Option<&str>,
 ) -> Result<String, LspClientError> {
-    let symbols = find_symbol_with_fallback(client, symbol_name).await?;
+    let symbols = find_symbol_with_fallback(client, symbol_name, search_dir).await?;
 
     if symbols.is_empty() {
         return Ok(format!("No references found for symbol: {symbol_name}"));

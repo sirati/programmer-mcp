@@ -178,9 +178,9 @@ impl ProgrammerServer {
         let any_error = results.iter().any(|r| !r.success);
 
         // Append any pending auto-diagnostics
-        let pending_diags = self.diag_cache.take_pending().await;
-        for diag in &pending_diags {
-            output.push_str(&format!("\n\n{diag}"));
+        if let Some(diag_report) = self.diag_cache.take_pending().await {
+            output.push_str("\n\n");
+            output.push_str(&diag_report);
         }
 
         // Append any pending trigger results

@@ -11,8 +11,9 @@ use crate::lsp::client::{LspClient, LspClientError};
 pub async fn find_impls(
     client: &Arc<LspClient>,
     type_name: &str,
+    search_dir: Option<&str>,
 ) -> Result<String, LspClientError> {
-    let symbols = find_symbol_with_fallback(client, type_name).await?;
+    let symbols = find_symbol_with_fallback(client, type_name, search_dir).await?;
     if symbols.is_empty() {
         return Ok(format!("{type_name} not found"));
     }

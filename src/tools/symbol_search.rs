@@ -6,14 +6,13 @@
 use std::sync::Arc;
 
 use heck::{ToLowerCamelCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
-use lsp_types::{DocumentSymbolResponse, SymbolInformation, Uri};
+use lsp_types::{SymbolInformation, Uri};
 use strsim::jaro_winkler;
 use tracing::debug;
 
 use super::formatting::uri_to_path;
-use super::symbol_match::{
-    child_name_matches, collect_doc_symbol_matches, collect_nested_matches, container_matches,
-};
+use super::symbol_match::{child_name_matches, collect_doc_symbol_matches, container_matches};
+use super::symbol_walk::try_directory_walk;
 use crate::lsp::client::LspClient;
 
 /// Generate case variations of a symbol name for fuzzy matching.
@@ -65,6 +64,7 @@ pub fn filter_exact_matches(symbols: &[SymbolInformation], name: &str) -> Vec<Sy
 pub async fn find_symbol_with_fallback(
     client: &Arc<LspClient>,
     name: &str,
+    search_dir: Option<&str>,
 ) -> Result<Vec<SymbolInformation>, crate::lsp::client::LspClientError> {
     // ── dotted parent.child resolution ──────────────────────────────────────
     if let Some(dot_pos) = name.rfind('.') {
@@ -147,36 +147,16 @@ pub async fn find_symbol_with_fallback(
         }
     }
 
-    Ok(vec![])
-}
-
-/// Find similar symbols within a document (fallback when workspace/symbol fails).
-#[allow(dead_code)]
-pub async fn find_similar_in_document(
-    client: &Arc<LspClient>,
-    uri: &Uri,
-    name: &str,
-    threshold: f64,
-) -> Result<Vec<(String, f64)>, crate::lsp::client::LspClientError> {
-    let doc_symbols = client.document_symbol(uri).await?;
-    let mut matches = Vec::new();
-
-    match doc_symbols {
-        DocumentSymbolResponse::Flat(symbols) => {
-            for sym in symbols {
-                let score = jaro_winkler(&sym.name, name);
-                if score >= threshold {
-                    matches.push((sym.name.clone(), score));
-                }
-            }
-        }
-        DocumentSymbolResponse::Nested(symbols) => {
-            collect_nested_matches(&symbols, name, threshold, &mut matches);
+    // ── directory-walk fallback ──────────────────────────────────────────────
+    // When all workspace_symbol strategies fail, walk upward from search_dir
+    // scanning document symbols in source files at each level.
+    if let Some(dir) = search_dir {
+        if let Some(found) = try_directory_walk(client, name, dir).await? {
+            return Ok(found);
         }
     }
 
-    matches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(matches)
+    Ok(vec![])
 }
 
 // ── private helpers ───────────────────────────────────────────────────────────

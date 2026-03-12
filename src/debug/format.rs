@@ -51,16 +51,32 @@ fn format_tools_list(result: &serde_json::Value) -> String {
     let Some(tools) = result.get("tools").and_then(|t| t.as_array()) else {
         return "(no tools)".to_string();
     };
-    tools
-        .iter()
-        .filter_map(|t| {
-            let name = t.get("name")?.as_str()?;
-            let desc = t.get("description").and_then(|d| d.as_str()).unwrap_or("");
-            let short = desc.lines().next().unwrap_or("");
-            Some(format!("- {name}: {short}"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = Vec::new();
+    for t in tools {
+        let Some(name) = t.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let desc = t.get("description").and_then(|d| d.as_str()).unwrap_or("");
+        let short = desc.lines().next().unwrap_or("");
+        out.push(format!("- {name}: {short}"));
+
+        // Include parameter descriptions from inputSchema
+        let Some(schema) = t.get("inputSchema") else {
+            continue;
+        };
+        let Some(props) = schema.get("properties").and_then(|p| p.as_object()) else {
+            continue;
+        };
+        for (param_name, param_schema) in props {
+            if let Some(param_desc) = param_schema.get("description").and_then(|d| d.as_str()) {
+                out.push(format!("  {param_name}:"));
+                for line in param_desc.lines() {
+                    out.push(format!("    {line}"));
+                }
+            }
+        }
+    }
+    out.join("\n")
 }
 
 // ── tool body formatters ──────────────────────────────────────────────────────

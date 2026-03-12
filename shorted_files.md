@@ -1,0 +1,1 @@
+remember that the main strategies for reducing file size is to extract util funtions, into a util, extract separate concerns into a new side module, or promoting the a folder module and splitting into multiple files there if that more appropirate

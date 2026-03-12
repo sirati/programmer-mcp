@@ -16,60 +16,87 @@ pub async fn execute_symbol_op(manager: &LspManager, op: Operation) -> Operation
         Operation::Definition {
             symbol_names,
             language,
+            search_dir,
         } => {
             let clients = manager.resolve(language.as_deref(), None);
+            let sd = search_dir.clone();
             execute_multi_symbol(
                 "definition",
                 clients,
                 &symbol_names,
-                |client, name| async move { definition::read_definition(&client, &name).await },
+                sd.as_deref(),
+                |client, name, sd| async move {
+                    definition::read_definition(&client, &name, sd.as_deref()).await
+                },
             )
             .await
         }
         Operation::References {
             symbol_names,
             language,
+            search_dir,
         } => {
             let clients = manager.resolve(language.as_deref(), None);
             execute_multi_symbol(
                 "references",
                 clients,
                 &symbol_names,
-                |client, name| async move { references::find_references(&client, &name, 5).await },
+                search_dir.as_deref(),
+                |client, name, sd| async move {
+                    references::find_references(&client, &name, 5, sd.as_deref()).await
+                },
             )
             .await
         }
         Operation::Docstring {
             symbol_names,
             language,
+            search_dir,
         } => {
             let clients = manager.resolve(language.as_deref(), None);
             execute_multi_symbol(
                 "docstring",
                 clients,
                 &symbol_names,
-                |client, name| async move { symbol_info::get_docstring(&client, &name).await },
+                search_dir.as_deref(),
+                |client, name, sd| async move {
+                    symbol_info::get_docstring(&client, &name, sd.as_deref()).await
+                },
             )
             .await
         }
         Operation::Body {
             symbol_names,
             language,
+            search_dir,
         } => {
             let clients = manager.resolve(language.as_deref(), None);
-            execute_multi_symbol("body", clients, &symbol_names, |client, name| async move {
-                symbol_info::get_body(&client, &name).await
-            })
+            execute_multi_symbol(
+                "body",
+                clients,
+                &symbol_names,
+                search_dir.as_deref(),
+                |client, name, sd| async move {
+                    symbol_info::get_body(&client, &name, sd.as_deref()).await
+                },
+            )
             .await
         }
         Operation::Impls {
             symbol_names,
             language,
+            search_dir,
         } => {
             let clients = manager.resolve(language.as_deref(), None);
-            execute_multi_symbol("impls", clients, &symbol_names, |client, name| async move {
-                impls::find_impls(&client, &name).await
-            })
+            execute_multi_symbol(
+                "impls",
+                clients,
+                &symbol_names,
+                search_dir.as_deref(),
+                |client, name, sd| async move {
+                    impls::find_impls(&client, &name, sd.as_deref()).await
+                },
+            )
             .await
         }
         _ => unreachable!("execute_symbol_op called with non-symbol operation"),

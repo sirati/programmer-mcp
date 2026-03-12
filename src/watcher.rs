@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 use crate::lsp::manager::LspManager;
-use crate::tools::diagnostics_cache::{format_diagnostics_for_cache, DiagnosticsCache};
+use crate::tools::diagnostics_cache::{diagnostics_to_entries, DiagnosticsCache};
 use crate::tools::formatting::path_to_uri;
 
 /// Watch workspace for file changes, notify LSP servers, and auto-collect diagnostics.
@@ -123,8 +123,8 @@ async fn collect_diagnostics(manager: &LspManager, cache: &DiagnosticsCache, pat
                 Err(_) => continue,
             };
             let diagnostics = client.get_cached_diagnostics(&uri).await;
-            let formatted = format_diagnostics_for_cache(path, &diagnostics);
-            cache.update(path, formatted).await;
+            let entries = diagnostics_to_entries(&diagnostics, Some(client.language()));
+            cache.update(path, entries).await;
         }
     }
 }

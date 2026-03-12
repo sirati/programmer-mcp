@@ -7,16 +7,17 @@ use std::path::Path;
 
 pub mod lsp;
 pub mod process;
+pub mod refactor;
 pub mod task;
 
 pub use lsp::{
-    handle_apply_action, handle_code_action, handle_code_actions, handle_diagnostics,
-    handle_format, handle_hover, handle_list_symbols, handle_rename_symbol, handle_symbol_cmd,
+    handle_diagnostics, handle_hover, handle_list_symbols, handle_rename_symbol, handle_symbol_cmd,
 };
 pub use process::{
     handle_await_trigger, handle_define_trigger, handle_search_output, handle_start_process,
     handle_stop_process,
 };
+pub use refactor::{handle_apply_action, handle_code_action, handle_code_actions, handle_format};
 pub use task::{
     handle_add_subtask, handle_complete_subtask, handle_complete_task, handle_list_subtasks,
     handle_list_tasks, handle_set_task, handle_update_task,

@@ -10,8 +10,9 @@ use crate::lsp::client::{LspClient, LspClientError};
 pub async fn get_docstring(
     client: &Arc<LspClient>,
     symbol_name: &str,
+    search_dir: Option<&str>,
 ) -> Result<String, LspClientError> {
-    let symbols = find_symbol_with_fallback(client, symbol_name).await?;
+    let symbols = find_symbol_with_fallback(client, symbol_name, search_dir).await?;
     if symbols.is_empty() {
         return Ok(format!("{symbol_name} not found"));
     }
@@ -35,8 +36,9 @@ pub async fn get_docstring(
 pub async fn get_body(
     client: &Arc<LspClient>,
     symbol_name: &str,
+    search_dir: Option<&str>,
 ) -> Result<String, LspClientError> {
-    let symbols = find_symbol_with_fallback(client, symbol_name).await?;
+    let symbols = find_symbol_with_fallback(client, symbol_name, search_dir).await?;
     if symbols.is_empty() {
         return Ok(format!("{symbol_name} not found"));
     }

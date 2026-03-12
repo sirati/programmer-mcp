@@ -40,14 +40,16 @@ where
 }
 
 /// Execute a symbol-based operation for multiple symbol names across all matching clients.
+/// `search_dir` is the DSL cd context passed through for directory-walk fallback.
 pub async fn execute_multi_symbol<F, Fut>(
     op_name: &str,
     clients: Vec<&Arc<LspClient>>,
     names: &[String],
+    search_dir: Option<&str>,
     f: F,
 ) -> OperationResult
 where
-    F: Fn(Arc<LspClient>, String) -> Fut,
+    F: Fn(Arc<LspClient>, String, Option<String>) -> Fut,
     Fut: std::future::Future<Output = Result<String, LspClientError>>,
 {
     if clients.is_empty() {
@@ -57,7 +59,11 @@ where
     let mut futures = Vec::new();
     for name in names {
         for client in &clients {
-            futures.push(f((*client).clone(), name.clone()));
+            futures.push(f(
+                (*client).clone(),
+                name.clone(),
+                search_dir.map(String::from),
+            ));
         }
     }
 

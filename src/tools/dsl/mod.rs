@@ -138,11 +138,11 @@ impl DslContext {
             "code_action" => handle_code_action(ops, args, &self.cd_dir, self.cd_file.as_deref()),
 
             // symbol-based (with bare-arg warnings)
-            "body" => handle_symbol_cmd(ops, warnings, "body", args),
-            "definition" => handle_symbol_cmd(ops, warnings, "definition", args),
-            "references" => handle_symbol_cmd(ops, warnings, "references", args),
-            "docstring" => handle_symbol_cmd(ops, warnings, "docstring", args),
-            "impls" => handle_symbol_cmd(ops, warnings, "impls", args),
+            "body" => handle_symbol_cmd(ops, warnings, "body", args, &self.cd_dir),
+            "definition" => handle_symbol_cmd(ops, warnings, "definition", args, &self.cd_dir),
+            "references" => handle_symbol_cmd(ops, warnings, "references", args, &self.cd_dir),
+            "docstring" => handle_symbol_cmd(ops, warnings, "docstring", args, &self.cd_dir),
+            "impls" => handle_symbol_cmd(ops, warnings, "impls", args, &self.cd_dir),
 
             // workspace
             "workspace_info" | "workspace-info" => ops.push(Operation::WorkspaceInfo),

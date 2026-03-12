@@ -20,6 +20,7 @@ pub mod symbol_info;
 pub mod symbol_list;
 pub mod symbol_match;
 pub mod symbol_search;
+pub mod symbol_walk;
 pub mod task_ops;
 pub mod workspace;
 
