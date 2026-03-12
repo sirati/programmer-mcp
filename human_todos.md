@@ -101,3 +101,36 @@ remember that file extensions for recognised languages are always optional
 
 
 lets filewatch and when a file was changes automatially call diagnostics on it, inside of our ./.programmer-mcp/.cache/ folder in a parallel filestructure to the project we save the diagnostic results as well as a file hash. if a file was changed we compare  and any new diagnostics will be reported in the output of the next execute. when diagnostics command is called we always check anew!
+
+
+i just saw these three commands being executed seperately:
+{
+  "commands": "cd src/remote/client.rs\nlist_symbols"
+}
+{
+  "commands": "cd src/tools/mod.rs\nlist_symbols"
+}
+{
+  "commands": "cd src/lsp/client.rs\nlist_symbols"
+}
+please make clear from example that the correct usage is 
+{
+  "commands": "list_symbol src/{{lsp remote}/client tools/mod}"
+}
+
+
+i just saw the following incorrect usage:
+{
+  "commands": "cd src/tools/mod.rs\nbody execute_batch execute_one execute_on_clients execute_on_first execute_multi_symbol strip_json_noise format_compact_json run_trigger_scanner"
+}
+because body just takes one argument, we should support it, but still warn! like this
+"command body [list] was used wrongly correct call would be body [execute_batch execute_one execute_on_clients execute_on_first execute_multi_symbol strip_json_noise format_compact_json run_trigger_scanner]"
+
+
+
+please add support so that subproject / workspaces inside of folders of the main directory are automatically discovered. so are standalone files. add a command workspace-info that shows all workspaces and standalone files (for files: by number in folder not name, unless its <=3 in the folder)
+
+
+we should expose refactor commands that lsp support 
+
+test with other language servers than just rust.

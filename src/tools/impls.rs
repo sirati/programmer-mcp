@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use lsp_types::DocumentSymbolResponse;
 
-use super::formatting::{read_range_from_file, uri_to_path};
+use super::formatting::uri_to_path;
 use super::symbol_search::find_symbol_with_fallback;
 use crate::lsp::client::{LspClient, LspClientError};
 

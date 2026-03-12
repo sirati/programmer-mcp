@@ -25,71 +25,8 @@ impl LspManager {
 
         for spec in specs {
             info!(language = %spec.language, command = %spec.command, "starting LSP");
-
-            // First attempt: use the spec as given.
-            match LspClient::start(&spec.language, &spec.command, &spec.args, workspace).await {
-                Ok(client) => {
-                    match client.initialize(workspace).await {
-                        Ok(_) => {
-                            clients.insert(spec.language.clone(), Arc::new(client));
-                        }
-                        Err(e) => {
-                            error!(language = %spec.language, "LSP initialization failed: {e}");
-                        }
-                    }
-                    continue;
-                }
-                Err(e) => {
-                    // Check whether it looks like a "not found" / OS error.
-                    let is_not_found = is_not_found_error(&e);
-                    if !is_not_found {
-                        error!(language = %spec.language, "failed to start LSP: {e}");
-                        continue;
-                    }
-                    warn!(
-                        language = %spec.language,
-                        command  = %spec.command,
-                        "LSP command not found, trying nix fallback"
-                    );
-                }
-            }
-
-            // Second attempt: nix run fallback.
-            match nix.fallback_command(&spec.command, &spec.args) {
-                None => {
-                    error!(
-                        language = %spec.language,
-                        command  = %spec.command,
-                        "LSP command not found and nix+flakes are not available"
-                    );
-                }
-                Some((nix_cmd, nix_args)) => {
-                    info!(
-                        language = %spec.language,
-                        nix_cmd  = %nix_cmd,
-                        ?nix_args,
-                        "starting LSP via nix run"
-                    );
-                    match LspClient::start(&spec.language, &nix_cmd, &nix_args, workspace).await {
-                        Ok(client) => match client.initialize(workspace).await {
-                            Ok(_) => {
-                                clients.insert(spec.language.clone(), Arc::new(client));
-                            }
-                            Err(e) => {
-                                error!(
-                                    language = %spec.language,
-                                    "LSP (nix) initialization failed: {e}"
-                                );
-                            }
-                        },
-                        Err(e) => {
-                            error!(
-                                language = %spec.language,
-                                "failed to start LSP via nix: {e}"
-                            );
-                        }
-                    }
-                }
+            if let Some(client) = start_one_spec(spec, workspace, &nix).await {
+                clients.insert(spec.language.clone(), Arc::new(client));
             }
         }
 
@@ -113,7 +50,6 @@ impl LspManager {
         if lang.is_empty() {
             return None;
         }
-        // Try exact match first, then check aliases
         self.clients
             .get(lang)
             .or_else(|| self.clients.values().find(|c| c.language() == lang))
@@ -145,6 +81,58 @@ impl LspManager {
             let _ = client.shutdown().await;
         }
     }
+}
+
+/// Try to start and initialize a single LSP spec, with automatic nix fallback.
+///
+/// Returns `Some(client)` on success, `None` if startup failed.
+async fn start_one_spec(spec: &LspSpec, workspace: &Path, nix: &NixEnv) -> Option<LspClient> {
+    // First attempt: use the spec as given.
+    match try_start_and_init(&spec.language, &spec.command, &spec.args, workspace).await {
+        Ok(client) => return Some(client),
+        Err(e) if !is_not_found_error(&e) => {
+            error!(language = %spec.language, "failed to start LSP: {e}");
+            return None;
+        }
+        Err(_) => {
+            warn!(
+                language = %spec.language,
+                command  = %spec.command,
+                "LSP command not found, trying nix fallback"
+            );
+        }
+    }
+
+    // Second attempt: nix run fallback.
+    let Some((nix_cmd, nix_args)) = nix.fallback_command(&spec.command, &spec.args) else {
+        error!(
+            language = %spec.language,
+            command  = %spec.command,
+            "LSP command not found and nix+flakes are not available"
+        );
+        return None;
+    };
+
+    info!(language = %spec.language, nix_cmd = %nix_cmd, ?nix_args, "starting LSP via nix run");
+    match try_start_and_init(&spec.language, &nix_cmd, &nix_args, workspace).await {
+        Ok(client) => Some(client),
+        Err(e) => {
+            error!(language = %spec.language, "failed to start LSP via nix: {e}");
+            None
+        }
+    }
+}
+
+/// Start the LSP process and run the initialize handshake.
+async fn try_start_and_init(
+    language: &str,
+    command: &str,
+    args: &[String],
+    workspace: &Path,
+) -> Result<LspClient, LspClientError> {
+    let client = LspClient::start(language, command, args, workspace).await?;
+    client.initialize(workspace).await?;
+    Ok(client)
 }
 
 /// Heuristic to determine if an `LspClientError` represents a "command not

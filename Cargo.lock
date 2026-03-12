@@ -848,6 +848,7 @@ dependencies = [
  "lsp-types",
  "notify",
  "rmcp",
+ "schemars",
  "serde",
  "serde_json",
  "strsim",
