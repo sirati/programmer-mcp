@@ -398,3 +398,21 @@ what is that anyway??? lets make it so that filewatcher ignores files not tracke
 if possible lets use some rust crate that can parse .gitignore and not rely on git directly. 
 
 next make sure that lsp only get file change notifications for files of their language, or that a known configuration files for that langauage
+
+
+
+
+
+
+
+
+
+
+
+
+{
+  "commands": "cd src/tools/dsl/ops\nbody lsp.rs.{handle_symbol_cmd, push_symbol_op}"
+}
+
+⚠ command `body lsp.rs.{handle_symbol_cmd, push_symbol_op}` was used without brackets — correct usage: `body [lsp.rs.{handle_symbol_cmd, push_symbol_op}]
+

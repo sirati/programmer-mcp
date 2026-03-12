@@ -3,4 +3,5 @@ lsp = [
     "nix:nil",
     "nix:nixd",
     "python:basedpyright-langserver --stdio",
+    "go:gopls",
 ]
