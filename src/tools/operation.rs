@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use super::serde_helpers::*;
 
+fn default_search_limit() -> usize {
+    20
+}
+
 /// A single operation within a batch request.
 ///
 /// Symbol-based operations accept `symbolNames` (array of strings) to process multiple
@@ -313,6 +317,14 @@ pub enum Operation {
     RequestHumanMessage,
     /// Show workspace subprojects and standalone files.
     WorkspaceInfo,
+    /// Fuzzy-search the symbol index.
+    SearchSymbols {
+        query: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
+        #[serde(default = "default_search_limit")]
+        limit: usize,
+    },
 }
 
 // ── result type ───────────────────────────────────────────────────────────────

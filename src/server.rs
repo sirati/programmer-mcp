@@ -69,6 +69,7 @@ pub struct ExecuteRequest {
     /// Read & Search:
     ///   read <file> [start end]            — read file contents (line range optional)
     ///   grep <pattern>                     — search workspace files for text (scoped by cd)
+    ///   search <query> [limit=N]           — fuzzy symbol search across the index
     ///
     /// Misc:
     ///   workspace_info                     — show subprojects and standalone files

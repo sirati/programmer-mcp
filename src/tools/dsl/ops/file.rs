@@ -1,10 +1,10 @@
-//! File-based DSL operation builders (read, grep).
+//! File-based DSL operation builders (read, grep, search).
 
 use std::path::Path;
 
 use crate::tools::Operation;
 
-use super::resolve_file;
+use super::{detect_dir_language, resolve_file};
 
 /// `read <file> [start end]` or `read` (uses cd_file)
 pub fn handle_read(ops: &mut Vec<Operation>, args: &str, cd_dir: &Path, cd_file: Option<&Path>) {
@@ -25,6 +25,56 @@ pub fn handle_read(ops: &mut Vec<Operation>, args: &str, cd_dir: &Path, cd_file:
             end_line: 0,
         });
     }
+}
+
+/// `search <query> [limit=N]` — fuzzy symbol search across the index
+pub fn handle_search_symbols(
+    ops: &mut Vec<Operation>,
+    args: &str,
+    cd_dir: &Path,
+    cd_file: Option<&Path>,
+) {
+    let parts: Vec<&str> = args.split_whitespace().collect();
+    if parts.is_empty() {
+        return;
+    }
+
+    let mut query_parts = Vec::new();
+    let mut limit = 20usize;
+
+    for part in &parts {
+        if let Some(n) = part.strip_prefix("limit=") {
+            if let Ok(l) = n.parse::<usize>() {
+                limit = l;
+            }
+        } else {
+            query_parts.push(*part);
+        }
+    }
+
+    let query = query_parts.join(" ");
+    if query.is_empty() {
+        return;
+    }
+
+    let language = cd_file
+        .and_then(|f| {
+            //let lang = crate::tools::formatting::detect_language_id(&f.display().to_string());
+            use crate::lsp::detect_lang::detect_language_id; // TODO maybe this function happens to have the same name but is wrong????
+            let lang = detect_language_id(&f.display().to_string());
+            if lang.is_empty() {
+                None
+            } else {
+                Some(lang.to_string())
+            }
+        })
+        .or_else(|| detect_dir_language(cd_dir));
+
+    ops.push(Operation::SearchSymbols {
+        query,
+        language,
+        limit,
+    });
 }
 
 /// `grep <pattern>` — scoped to cd_dir if set

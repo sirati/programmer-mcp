@@ -219,8 +219,13 @@ impl DslContext {
             // read file
             "read" | "cat" => handle_read(ops, args, &self.cd_dir, self.cd_file.as_deref()),
 
-            // search
-            "grep" | "search" => handle_grep(ops, args, &self.cd_dir),
+            // text search
+            "grep" => handle_grep(ops, args, &self.cd_dir),
+
+            // symbol search
+            "search" | "find" => {
+                handle_search_symbols(ops, args, &self.cd_dir, self.cd_file.as_deref())
+            }
 
             // workspace
             "workspace_info" | "workspace-info" => ops.push(Operation::WorkspaceInfo),

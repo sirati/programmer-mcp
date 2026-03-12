@@ -288,7 +288,7 @@ fn push_symbol_op(
 }
 
 /// Detect the dominant programming language in a directory by sampling source files.
-fn detect_dir_language(dir: &Path) -> Option<String> {
+pub fn detect_dir_language(dir: &Path) -> Option<String> {
     if dir.as_os_str().is_empty() {
         return None;
     }
