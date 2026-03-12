@@ -371,7 +371,7 @@ pub async fn execute_edit_range(
     undo_store: &UndoStore,
     limits: &LengthLimits,
 ) -> Result<String, LspClientError> {
-    use super::edit_apply::apply_range_edit;
+    use super::edit_range_apply::apply_range_edit;
 
     let symbols = find_symbol_exact(client, symbol_name).await?;
     let filtered: Vec<_> = symbols

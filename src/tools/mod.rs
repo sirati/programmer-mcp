@@ -8,6 +8,7 @@ pub mod dsl;
 pub mod edit;
 pub mod edit_apply;
 pub mod edit_extract;
+pub mod edit_range_apply;
 pub mod edit_types;
 pub mod exec_helpers;
 pub mod execute;
