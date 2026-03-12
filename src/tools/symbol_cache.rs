@@ -93,7 +93,7 @@ impl SymbolCache {
         }
 
         // Merge into index
-        self.add_to_index(&symbols).await;
+        self.add_symbols(&symbols).await;
 
         Ok(symbols)
     }
@@ -194,7 +194,7 @@ impl SymbolCache {
                         },
                     );
                     drop(cache);
-                    self.add_to_index(&symbols).await;
+                    self.add_symbols(&symbols).await;
                     if query.is_empty() {
                         break;
                     }
@@ -236,7 +236,7 @@ impl SymbolCache {
 
             let flat = flatten_doc_symbols(&doc_symbols, &uri);
             total += flat.len();
-            self.add_to_index(&flat).await;
+            self.add_symbols(&flat).await;
         }
         debug!(lsp = %lang, total, files = files.len(), "seeded symbol cache (documentSymbol)");
     }
@@ -262,8 +262,8 @@ impl SymbolCache {
         }
     }
 
-    /// Add symbols to the merged index.
-    async fn add_to_index(&self, symbols: &[SymbolInformation]) {
+    /// Add symbols to the merged index (public for directory-walk indexing).
+    pub async fn add_symbols(&self, symbols: &[SymbolInformation]) {
         let mut index = self.index.write().await;
         let mut name_idx = self.name_index.write().await;
         for sym in symbols {
@@ -296,7 +296,7 @@ impl SymbolCache {
         client.open_file(path_str).await.ok();
         let doc_symbols = client.document_symbol(uri).await?;
         let flat = flatten_doc_symbols(&doc_symbols, uri);
-        self.add_to_index(&flat).await;
+        self.add_symbols(&flat).await;
         Ok(())
     }
 

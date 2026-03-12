@@ -10,6 +10,7 @@ use std::sync::Arc;
 use lsp_types::SymbolInformation;
 use tracing::debug;
 
+use super::doc_index::flatten_doc_symbols;
 use super::formatting::path_to_uri;
 use super::symbol_match::collect_doc_symbol_matches;
 use super::SOURCE_EXTS;
@@ -164,6 +165,10 @@ async fn check_file_for_symbol(
         Ok(s) => s,
         Err(_) => return Ok(None),
     };
+
+    // Feed all symbols from this file into the index for future lookups.
+    let flat = flatten_doc_symbols(&doc_symbols, &uri);
+    client.symbol_cache().add_symbols(&flat).await;
 
     let exact = collect_doc_symbol_matches(&doc_symbols, &uri, name, false);
     if !exact.is_empty() {

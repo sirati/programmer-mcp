@@ -259,6 +259,15 @@ async fn notify_and_collect(
                         debug!(lsp = %lang, path, "file change notify failed: {e}");
                     }
                 }
+                // Re-index changed file in background after LSP processes the change.
+                let c = client.clone();
+                let uri = change.uri.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    if let Err(e) = c.symbol_cache().index_file(&c, &uri).await {
+                        trace!(lsp = %c.language(), "re-index after change failed: {e}");
+                    }
+                });
             }
         }
     }
