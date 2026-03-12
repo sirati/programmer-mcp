@@ -11,12 +11,32 @@ use strsim::jaro_winkler;
 /// Check whether a symbol name matches the query `expected` (exact or fuzzy).
 pub fn child_name_matches(name: &str, expected: &str, fuzzy: bool) -> bool {
     if fuzzy {
-        jaro_winkler(name, expected) > 0.8
+        // For fuzzy matching, also try the bare suffix after the last separator
+        let bare = bare_name(name);
+        jaro_winkler(bare, expected) > 0.8
     } else {
         name == expected
             || name.ends_with(&format!(".{expected}"))
             || name.ends_with(&format!("::{expected}"))
+            // Go-style: (*Client).Call or (Client).Call
+            || name.ends_with(&format!(").{expected}"))
     }
+}
+
+/// Extract the bare name from a potentially qualified symbol name.
+/// e.g. `(*Client).Call` → `Call`, `foo::bar` → `bar`, `Foo.bar` → `bar`
+fn bare_name(name: &str) -> &str {
+    // Try Go-style first: (*T).Method or (T).Method
+    if let Some(pos) = name.rfind(").") {
+        return &name[pos + 2..];
+    }
+    if let Some(pos) = name.rfind("::") {
+        return &name[pos + 2..];
+    }
+    if let Some(pos) = name.rfind('.') {
+        return &name[pos + 1..];
+    }
+    name
 }
 
 /// Check whether a container name (from workspace/symbol) matches `parent`.

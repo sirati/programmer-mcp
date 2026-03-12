@@ -160,13 +160,15 @@ impl SymbolCache {
             for key in &removed {
                 index.remove(key);
             }
-            // Update name_index
+            // Update name_index (both full name and bare name entries)
             let mut name_idx = self.name_index.write().await;
             for key in &removed {
-                if let Some(keys) = name_idx.get_mut(&key.0) {
-                    keys.retain(|k| k != key);
-                    if keys.is_empty() {
-                        name_idx.remove(&key.0);
+                for name in [key.0.as_str(), extract_bare_name(&key.0)] {
+                    if let Some(keys) = name_idx.get_mut(name) {
+                        keys.retain(|k| k != key);
+                        if keys.is_empty() {
+                            name_idx.remove(name);
+                        }
                     }
                 }
             }
@@ -275,6 +277,14 @@ impl SymbolCache {
                     .entry(sym.name.clone())
                     .or_default()
                     .push(key.clone());
+                // Also index by bare name for Go-style (*Type).Method etc.
+                let bare = extract_bare_name(&sym.name);
+                if bare != sym.name {
+                    name_idx
+                        .entry(bare.to_string())
+                        .or_default()
+                        .push(key.clone());
+                }
                 index.insert(
                     key,
                     IndexEntry {
@@ -307,4 +317,20 @@ impl SymbolCache {
         let symbols = self.index.read().await.len();
         (queries, symbols)
     }
+}
+
+/// Extract the bare name from a qualified symbol name.
+/// e.g. `(*Client).Call` → `Call`, `foo::bar` → `bar`, `Foo.bar` → `bar`
+fn extract_bare_name(name: &str) -> &str {
+    // Go-style: (*T).Method or (T).Method
+    if let Some(pos) = name.rfind(").") {
+        return &name[pos + 2..];
+    }
+    if let Some(pos) = name.rfind("::") {
+        return &name[pos + 2..];
+    }
+    if let Some(pos) = name.rfind('.') {
+        return &name[pos + 1..];
+    }
+    name
 }

@@ -85,10 +85,13 @@ pub async fn find_symbol_with_fallback(
             let filtered: Vec<_> = child_from_index
                 .into_iter()
                 .filter(|s| {
-                    s.container_name
-                        .as_deref()
-                        .map(|c| container_matches(c, parent, false))
-                        .unwrap_or(false)
+                    // Check container_name (set by nested documentSymbol responses)
+                    if let Some(c) = s.container_name.as_deref() {
+                        return container_matches(c, parent, false);
+                    }
+                    // For Go-style (*Type).Method names where container_name is None,
+                    // check if the full name embeds the parent as a receiver.
+                    name_has_receiver(&s.name, parent)
                 })
                 .collect();
             if !filtered.is_empty() {
@@ -234,6 +237,16 @@ pub async fn find_symbol_with_fallback(
 }
 
 // ── private helpers ───────────────────────────────────────────────────────────
+
+/// Check if a symbol name contains a receiver/qualifier matching the parent.
+/// Handles Go-style `(*Client).Call`, `(Client).Call` etc.
+fn name_has_receiver(name: &str, parent: &str) -> bool {
+    // (*Client).Call or (Client).Call
+    if name.contains(&format!("({parent}).")) || name.contains(&format!("(*{parent}).")) {
+        return true;
+    }
+    false
+}
 
 /// Sort by Jaro-Winkler score descending, returning those above 0.8.
 fn best_fuzzy_matches(symbols: Vec<SymbolInformation>, query: &str) -> Vec<SymbolInformation> {
