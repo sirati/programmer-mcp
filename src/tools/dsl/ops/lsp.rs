@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use crate::lsp::detect_lang::detect_language_id;
 use crate::tools::Operation;
 use crate::tools::SOURCE_EXTS;
 
@@ -140,6 +141,7 @@ pub fn handle_symbol_cmd(
     cmd: &str,
     args: &str,
     cd_dir: &Path,
+    cd_file: Option<&Path>,
 ) {
     let trimmed = args.trim();
     if trimmed.is_empty() {
@@ -177,9 +179,16 @@ pub fn handle_symbol_cmd(
                     Some(cd_dir.display().to_string())
                 }
             });
+            // Detect language from file extension to scope the search.
+            let lang = detect_language_id(items[0]);
+            let language = if lang.is_empty() {
+                None
+            } else {
+                Some(lang.to_string())
+            };
             // Symbol names are everything after the path
             let symbol_names: Vec<String> = items[1..].iter().map(|s| s.to_string()).collect();
-            push_symbol_op(ops, cmd, symbol_names, search_dir);
+            push_symbol_op(ops, cmd, symbol_names, language, search_dir);
             return;
         }
         if items.len() > 1 {
@@ -196,11 +205,25 @@ pub fn handle_symbol_cmd(
         return;
     }
     let search_dir = if cd_dir.as_os_str().is_empty() {
-        None
+        // When cd_file is set at workspace root, use "." so directory walk still works.
+        if cd_file.is_some() {
+            Some(".".to_string())
+        } else {
+            None
+        }
     } else {
         Some(cd_dir.display().to_string())
     };
-    push_symbol_op(ops, cmd, syms, search_dir);
+    // When cd_file is set, scope search to that file's language.
+    let language = cd_file.and_then(|f| {
+        let lang = detect_language_id(&f.display().to_string());
+        if lang.is_empty() {
+            None
+        } else {
+            Some(lang.to_string())
+        }
+    });
+    push_symbol_op(ops, cmd, syms, language, search_dir);
 }
 
 /// Check if a string looks like a file path (contains `/` or has a source extension).
@@ -218,42 +241,43 @@ fn push_symbol_op(
     ops: &mut Vec<Operation>,
     cmd: &str,
     symbol_names: Vec<String>,
+    language: Option<String>,
     search_dir: Option<String>,
 ) {
     let op = match cmd {
         "body" => Operation::Body {
             symbol_names,
-            language: None,
+            language,
             search_dir,
         },
         "definition" => Operation::Definition {
             symbol_names,
-            language: None,
+            language,
             search_dir,
         },
         "references" => Operation::References {
             symbol_names,
-            language: None,
+            language,
             search_dir,
         },
         "docstring" => Operation::Docstring {
             symbol_names,
-            language: None,
+            language,
             search_dir,
         },
         "impls" => Operation::Impls {
             symbol_names,
-            language: None,
+            language,
             search_dir,
         },
         "callers" => Operation::Callers {
             symbol_names,
-            language: None,
+            language,
             search_dir,
         },
         "callees" => Operation::Callees {
             symbol_names,
-            language: None,
+            language,
             search_dir,
         },
         _ => return,
