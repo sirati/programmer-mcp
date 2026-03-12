@@ -225,7 +225,7 @@ fn format_flat_grouped(out: &mut String, symbols: &[lsp_types::SymbolInformation
     }
 
     // Print containers that weren't in top_level (nested or orphan containers)
-    let top_names: std::collections::HashSet<&str> = top_level
+    let _top_names: std::collections::HashSet<&str> = top_level
         .values()
         .flat_map(|v| v.iter().map(|(n, _)| *n))
         .collect();

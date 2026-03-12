@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Indentation detection and normalization for code editing.
 ///
 /// Detects the indent style (tabs vs spaces, width) of existing code and

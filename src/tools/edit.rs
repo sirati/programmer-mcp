@@ -55,8 +55,8 @@ pub struct PendingEdit {
     pub new_content: String,
     pub path: String,
     pub symbol_name: String,
-    pub search_dir: Option<String>,
-    pub candidates: Vec<(String, String)>, // (path, symbol_name)
+    pub _search_dir: Option<String>,
+    pub _candidates: Vec<(String, String)>, // (path, symbol_name)
 }
 
 /// A bounded key-value store that evicts the oldest entry when at capacity.
@@ -154,7 +154,7 @@ pub async fn execute_undo(undo_id: &str, undo_store: &UndoStore) -> Result<Strin
             .collect()
     };
 
-    let file_norm = normalize(&file_content);
+    let _file_norm = normalize(&file_content);
     let new_norm = normalize(&entry.new_content);
 
     if new_norm.is_empty() {
@@ -461,8 +461,8 @@ async fn disambiguate(
                 new_content: new_content.to_string(),
                 path: path.to_string(),
                 symbol_name: symbol_name.to_string(),
-                search_dir: search_dir.map(|s| s.to_string()),
-                candidates: candidate_list,
+                _search_dir: search_dir.map(|s| s.to_string()),
+                _candidates: candidate_list,
             },
         );
     }

@@ -46,18 +46,6 @@ pub fn detect_subprojects(workspace_root: &Path) -> Vec<SubProject> {
     subprojects
 }
 
-/// Map a subproject kind (e.g. "python", "rust/cargo") to the LSP language name.
-pub fn subproject_kind_to_lsp_language(kind: &str) -> Option<&'static str> {
-    match kind {
-        "python" => Some("python"),
-        "rust/cargo" => Some("rust"),
-        "go" => Some("go"),
-        "node" => Some("typescript"), // node projects typically use ts/js LSP
-        "nix" => Some("nix"),
-        _ => None,
-    }
-}
-
 /// Scan the workspace and return a formatted description of subprojects and standalone files.
 pub fn workspace_info(workspace_root: &Path) -> String {
     let subprojects = detect_subprojects(workspace_root);

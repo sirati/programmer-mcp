@@ -367,3 +367,34 @@ dirs: a, b, files: c, d, e
 
 
 lets make sure that stores like undo or for apply_edit are per connection, and cleared if the connection is closed. also they should have a max capacity of 1000, after that the longest unused entry is dropped in favour if thenew.
+
+
+i have seen a single cd command issues, lets detech this and cds at the end of a command chain, and warn that cd does not change path, and only applies to the multi-command chains commands after it.
+
+
+
+{
+  "commands": "cd src\ngrep \"lsp.*init\\|start_lsp\\|spawn_lsp\\|LspClient::new\\|lsp_clients\\|fn.*lsp\""
+}
+⚠ unknown command: start_lsp\
+⚠ unknown command: spawn_lsp\
+⚠ unknown command: LspClient::new\
+⚠ unknown command: lsp_clients\
+⚠ unknown command: fn.*lsp"
+
+no matches for `"lsp.*init\`
+Please always batch multiple commands together.
+
+BUG: we need to support dealing with quotes in commands, we need to deal with escaping in commands
+
+
+
+when a language server times out, 
+
+
+target/flycheck0/stdout` (this is a cargo tmp file)
+
+what is that anyway??? lets make it so that filewatcher ignores files not tracked by git, also on a per file bases add a backoff timeout starting with 1s ending at 15s, if for x4 that time no update was received, its reset. 
+if possible lets use some rust crate that can parse .gitignore and not rely on git directly. 
+
+next make sure that lsp only get file change notifications for files of their language, or that a known configuration files for that langauage

@@ -199,6 +199,7 @@ impl SymbolCache {
     }
 
     /// Get the number of cached queries and indexed symbols.
+    #[allow(dead_code)]
     pub async fn stats(&self) -> (usize, usize) {
         let queries = self.query_cache.read().await.len();
         let symbols = self.index.read().await.len();

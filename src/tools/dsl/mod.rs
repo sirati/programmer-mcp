@@ -94,6 +94,7 @@ pub struct DslOptions {
 /// Lines are processed in order. `cd` commands update the current path
 /// context used by subsequent file-based operations.
 /// All operations are collected and returned for concurrent execution.
+#[cfg(test)]
 pub fn parse_dsl(commands: &str) -> ParseResult {
     parse_dsl_with_options(commands, &DslOptions::default())
 }

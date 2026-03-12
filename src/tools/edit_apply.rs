@@ -71,8 +71,8 @@ pub(crate) async fn apply_symbol_edit(
                         new_content: new_content.to_string(),
                         path: rel_path,
                         symbol_name: symbol.name.clone(),
-                        search_dir: None,
-                        candidates: vec![],
+                        _search_dir: None,
+                        _candidates: vec![],
                     },
                 );
             }
