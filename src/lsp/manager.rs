@@ -30,7 +30,10 @@ impl LspManager {
             }
             info!(language = %spec.language, command = %spec.command, "starting LSP");
             if let Some(client) = start_one_spec(spec, workspace, &nix).await {
-                clients.insert(spec.language.clone(), Arc::new(client));
+                let arc = Arc::new(client);
+                clients.insert(spec.language.clone(), arc.clone());
+                // Seed symbol cache in background so startup isn't blocked.
+                tokio::spawn(async move { arc.symbol_cache().seed(&arc).await });
             }
         }
 

@@ -141,22 +141,42 @@ impl SymbolCache {
         trace!(file_uri, "symbol cache invalidated for file");
     }
 
-    /// Seed the cache by querying for common prefixes.
-    /// Call this after LSP initialization to pre-populate the index.
+    /// Seed the cache by querying workspace symbols after the LSP has indexed.
+    /// Waits briefly then tries common queries to populate the index.
     pub async fn seed(&self, client: &Arc<LspClient>) {
-        // Query with empty string to get all symbols (many LSPs support this)
-        if let Ok(symbols) = client.workspace_symbol("").await {
-            debug!(count = symbols.len(), "seeded symbol cache");
-            self.add_to_index(&symbols).await;
-            let mut cache = self.query_cache.write().await;
-            cache.insert(
-                String::new(),
-                CachedQuery {
-                    symbols,
-                    fetched_at: Instant::now(),
-                },
-            );
+        // Wait for the LSP to finish initial indexing.
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        let mut total = 0;
+        // Try empty query first (rust-analyzer returns all symbols), then
+        // single-letter prefixes as fallback for LSPs that require non-empty.
+        for query in [
+            "", "a", "b", "c", "d", "e", "f", "g", "h", "i", "m", "n", "o", "p", "r", "s", "t",
+            "u", "w",
+        ] {
+            match client.workspace_symbol(query).await {
+                Ok(symbols) if !symbols.is_empty() => {
+                    total += symbols.len();
+                    let mut cache = self.query_cache.write().await;
+                    cache.insert(
+                        query.to_string(),
+                        CachedQuery {
+                            symbols: symbols.clone(),
+                            fetched_at: Instant::now(),
+                        },
+                    );
+                    drop(cache);
+                    self.add_to_index(&symbols).await;
+                    // If empty query returned results, no need for prefix queries.
+                    if query.is_empty() {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => break, // LSP errored — stop trying.
+            }
         }
+        debug!(lsp = %client.language(), total, "seeded symbol cache");
     }
 
     /// Add symbols to the merged index.
