@@ -16,16 +16,15 @@ use jsonrpsee::core::client::{ClientT, SubscriptionClientT};
 use jsonrpsee::core::traits::ToRpcParams;
 use lsp_types::notification::{Exit, Initialized, Notification, PublishDiagnostics};
 use lsp_types::request::{Initialize, Request, Shutdown};
-use lsp_types::PublishDiagnosticsParams;
 use lsp_types::{
-    ClientInfo, Diagnostic, InitializeParams, InitializeResult, InitializedParams, Uri,
-    WorkspaceFolder,
+    ClientInfo, Diagnostic, InitializeParams, InitializeResult, InitializedParams,
+    PublishDiagnosticsParams, Uri,
 };
 use serde::Serialize;
 use serde_json::value::RawValue;
 use tokio::process::Command;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::capabilities::build_client_capabilities;
 use super::transport;
@@ -94,12 +93,14 @@ impl LspClient {
             use tokio::io::{AsyncBufReadExt, BufReader};
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                debug!(lsp = %lang_for_log, stderr = %line);
+                trace!(lsp = %lang_for_log, stderr = %line);
             }
         });
 
-        let (sender, receiver) = transport::io_transport(stdin, stdout);
-        let rpc = ClientBuilder::default().build_with_tokio(sender, receiver);
+        let (sender, receiver) = transport::io_transport(stdin, stdout).await;
+        let rpc = ClientBuilder::default()
+            .request_timeout(std::time::Duration::from_secs(120))
+            .build_with_tokio(sender, receiver);
 
         Ok(Self {
             rpc,
@@ -121,13 +122,11 @@ impl LspClient {
         let params = InitializeParams {
             process_id: Some(std::process::id()),
             root_uri: Some(workspace_uri.clone()),
-            workspace_folders: Some(vec![WorkspaceFolder {
-                uri: workspace_uri,
-                name: workspace
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into())
-                    .unwrap_or_else(|| "workspace".into()),
-            }]),
+            // Don't send workspaceFolders — some LSPs (basedpyright) will
+            // attempt to index the entire workspace, which blocks responses
+            // when the workspace is a large non-matching project (e.g. Rust).
+            // rootUri is sufficient for file resolution.
+            workspace_folders: None,
             capabilities: build_client_capabilities(),
             initialization_options: None,
             client_info: Some(ClientInfo {
@@ -137,6 +136,11 @@ impl LspClient {
             locale: None,
             ..Default::default()
         };
+
+        // Subscribe before initialize so we don't miss early notifications.
+        self.subscribe_diagnostics().await;
+        self.subscribe_progress().await;
+        self.subscribe_noise_notifications().await;
 
         let result: InitializeResult = self
             .rpc
@@ -148,7 +152,6 @@ impl LspClient {
             .await?;
 
         info!(language = %self.language, "LSP initialized");
-        self.subscribe_diagnostics().await;
 
         Ok(result)
     }
@@ -171,12 +174,65 @@ impl LspClient {
                             .write()
                             .await
                             .insert(uri_key.clone(), params.diagnostics);
-                        debug!(lsp = %lang, uri = %uri_key, count, "diagnostics updated");
+                        trace!(lsp = %lang, uri = %uri_key, count, "diagnostics updated");
                     }
                 });
             }
             Err(e) => {
                 warn!(lsp = %lang, "failed to subscribe to diagnostics: {e}");
+            }
+        }
+    }
+
+    /// Subscribe to $/progress to log LSP indexing status and detect when ready.
+    async fn subscribe_progress(&self) {
+        let lang = self.language.clone();
+        if let Ok(mut sub) = self
+            .rpc
+            .subscribe_to_method::<serde_json::Value>("$/progress")
+            .await
+        {
+            tokio::spawn(async move {
+                while let Some(Ok(val)) = sub.next().await {
+                    // Extract progress message for logging
+                    if let Some(value) = val.get("value") {
+                        let kind = value.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                        let message = value.get("message").and_then(|m| m.as_str());
+                        let title = value.get("title").and_then(|t| t.as_str());
+                        match kind {
+                            "begin" => {
+                                let title = title.unwrap_or("work");
+                                info!(lsp = %lang, title, "LSP started: {title}");
+                            }
+                            "end" => {
+                                let msg = message.unwrap_or("done");
+                                info!(lsp = %lang, "LSP finished: {msg}");
+                            }
+                            "report" => {
+                                if let Some(msg) = message {
+                                    debug!(lsp = %lang, "{msg}");
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    /// Subscribe to noisy notifications to prevent "not a registered method" log spam.
+    /// Note: server→client *requests* (workspace/configuration, client/registerCapability,
+    /// window/workDoneProgress/create) are handled automatically in the transport layer.
+    async fn subscribe_noise_notifications(&self) {
+        let methods = ["workspace/diagnostic/refresh", "window/logMessage"];
+        for method in methods {
+            if let Ok(mut sub) = self
+                .rpc
+                .subscribe_to_method::<serde_json::Value>(method)
+                .await
+            {
+                tokio::spawn(async move { while let Some(Ok(_)) = sub.next().await {} });
             }
         }
     }

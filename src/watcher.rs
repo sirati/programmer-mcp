@@ -1,13 +1,117 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use ignore::gitignore::Gitignore;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
+use crate::lsp::detect_lang::detect_language_id;
 use crate::lsp::manager::LspManager;
 use crate::tools::diagnostics_cache::{diagnostics_to_entries, DiagnosticsCache};
 use crate::tools::formatting::path_to_uri;
+
+// ── Per-file backoff ─────────────────────────────────────────────────
+
+const BACKOFF_MIN: Duration = Duration::from_secs(1);
+const BACKOFF_MAX: Duration = Duration::from_secs(15);
+const BACKOFF_RESET_MULTIPLIER: u32 = 4;
+
+struct FileBackoff {
+    entries: HashMap<String, BackoffEntry>,
+}
+
+struct BackoffEntry {
+    current: Duration,
+    last_event: Instant,
+}
+
+impl FileBackoff {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Returns true if this file event should be processed (not throttled).
+    fn should_process(&mut self, path: &str) -> bool {
+        let now = Instant::now();
+        let entry = self
+            .entries
+            .entry(path.to_string())
+            .or_insert(BackoffEntry {
+                current: BACKOFF_MIN,
+                last_event: now - BACKOFF_MAX * 2, // ensure first event always passes
+            });
+
+        let elapsed = now.duration_since(entry.last_event);
+
+        // Reset backoff if idle for 4x the current backoff
+        if elapsed >= entry.current * BACKOFF_RESET_MULTIPLIER {
+            entry.current = BACKOFF_MIN;
+            entry.last_event = now;
+            return true;
+        }
+
+        // Throttle if within backoff window
+        if elapsed < entry.current {
+            return false;
+        }
+
+        // Process and increase backoff
+        entry.last_event = now;
+        entry.current = (entry.current * 2).min(BACKOFF_MAX);
+        true
+    }
+}
+
+// ── Language relevance ───────────────────────────────────────────────
+
+/// Known config files that are relevant to specific LSP languages.
+fn config_file_language(filename: &str) -> Option<&'static str> {
+    match filename {
+        "pyrightconfig.json" | "pyproject.toml" | "setup.py" | "setup.cfg" | ".python-version" => {
+            Some("python")
+        }
+        "Cargo.toml"
+        | "Cargo.lock"
+        | "rust-toolchain.toml"
+        | "rust-toolchain"
+        | "clippy.toml"
+        | "rustfmt.toml"
+        | ".rustfmt.toml" => Some("rust"),
+        "go.mod" | "go.sum" => Some("go"),
+        "package.json" | "tsconfig.json" | "jsconfig.json" | ".eslintrc.json" | ".prettierrc" => {
+            Some("typescript")
+        }
+        "flake.nix" | "flake.lock" | "default.nix" | "shell.nix" => Some("nix"),
+        _ => None,
+    }
+}
+
+/// Determine which LSP language a file change is relevant to.
+/// Returns None if the file is not relevant to any LSP.
+fn file_relevant_language(path: &str) -> Option<&'static str> {
+    // Check if it's a known config file
+    let filename = Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if let Some(lang) = config_file_language(filename) {
+        return Some(lang);
+    }
+
+    // Check by extension
+    let lang = detect_language_id(path);
+    if lang.is_empty() {
+        return None;
+    }
+    Some(lang)
+}
+
+// ── Watcher ──────────────────────────────────────────────────────────
 
 /// Watch workspace for file changes, notify LSP servers, and auto-collect diagnostics.
 pub async fn watch_workspace(
@@ -34,6 +138,10 @@ pub async fn watch_workspace(
         return;
     }
 
+    // Build gitignore matcher from workspace
+    let gitignore = build_gitignore(workspace);
+    let mut backoff = FileBackoff::new();
+
     info!(path = %workspace.display(), "watching workspace for changes");
 
     while let Some(event) = rx.recv().await {
@@ -44,6 +152,23 @@ pub async fn watch_workspace(
                     .iter()
                     .filter_map(|p| {
                         let path_str = p.to_string_lossy();
+
+                        // Skip gitignored files
+                        let is_dir = p.is_dir();
+                        if gitignore.matched_path_or_any_parents(p, is_dir).is_ignore() {
+                            return None;
+                        }
+
+                        // Skip common non-source dirs not covered by gitignore
+                        if path_str.contains("/.git/") {
+                            return None;
+                        }
+
+                        // Per-file backoff
+                        if !backoff.should_process(&path_str) {
+                            return None;
+                        }
+
                         let uri = path_to_uri(&path_str).ok()?;
                         let change_type = match event.kind {
                             EventKind::Create(_) => lsp_types::FileChangeType::CREATED,
@@ -61,7 +186,7 @@ pub async fn watch_workspace(
                     continue;
                 }
 
-                debug!(count = changes.len(), "file change events");
+                trace!(count = changes.len(), "file change events");
 
                 notify_and_collect(&manager, &diag_cache, &changes).await;
             }
@@ -72,26 +197,66 @@ pub async fn watch_workspace(
     drop(watcher);
 }
 
+fn build_gitignore(workspace: &Path) -> Gitignore {
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(workspace);
+
+    // Always ignore common dirs even without .gitignore
+    let _ = builder.add_line(None, "/target/");
+    let _ = builder.add_line(None, "/node_modules/");
+    let _ = builder.add_line(None, "/__pycache__/");
+    let _ = builder.add_line(None, "/.programmer-mcp/");
+
+    // Load .gitignore if present
+    let gitignore_path = workspace.join(".gitignore");
+    if gitignore_path.exists() {
+        let _ = builder.add(&gitignore_path);
+    }
+
+    builder.build().unwrap_or_else(|e| {
+        debug!("failed to build gitignore: {e}, using defaults");
+        ignore::gitignore::GitignoreBuilder::new(workspace)
+            .build()
+            .unwrap()
+    })
+}
+
 async fn notify_and_collect(
     manager: &Arc<LspManager>,
     diag_cache: &Arc<DiagnosticsCache>,
     changes: &[lsp_types::FileEvent],
 ) {
-    // Notify LSP servers of file changes and invalidate symbol caches
+    // Group changes by relevant language, then notify only matching LSP clients
     for client in manager.all() {
-        if let Err(e) = client.did_change_watched_files(changes.to_vec()).await {
-            debug!(lsp = %client.language(), "watched files notification failed: {e}");
+        let lang = client.language();
+        let relevant: Vec<lsp_types::FileEvent> = changes
+            .iter()
+            .filter(|change| {
+                let uri_str = change.uri.as_str();
+                let path = uri_str.strip_prefix("file://").unwrap_or(uri_str);
+                match file_relevant_language(path) {
+                    Some(file_lang) => file_lang == lang,
+                    None => false, // unknown file type → don't notify any LSP
+                }
+            })
+            .cloned()
+            .collect();
+
+        if relevant.is_empty() {
+            continue;
         }
-        for change in changes {
+
+        if let Err(e) = client.did_change_watched_files(relevant.clone()).await {
+            debug!(lsp = %lang, "watched files notification failed: {e}");
+        }
+
+        for change in &relevant {
             let uri_str = change.uri.as_str();
-            // Invalidate symbol cache for source file changes (skip build artifacts)
-            if !uri_str.contains("/target/") {
-                client.symbol_cache().invalidate_file(uri_str).await;
-            }
+            client.symbol_cache().invalidate_file(uri_str).await;
+
             if change.typ == lsp_types::FileChangeType::CHANGED {
                 if let Some(path) = uri_str.strip_prefix("file://") {
                     if let Err(e) = client.notify_file_changed(path).await {
-                        debug!(lsp = %client.language(), path, "file change notify failed: {e}");
+                        debug!(lsp = %lang, path, "file change notify failed: {e}");
                     }
                 }
             }
@@ -103,13 +268,6 @@ async fn notify_and_collect(
         .iter()
         .filter(|c| c.typ != lsp_types::FileChangeType::DELETED)
         .filter_map(|c| c.uri.as_str().strip_prefix("file://").map(String::from))
-        .filter(|p| {
-            // Skip non-source paths to avoid recursive caching
-            !p.contains("/.git/")
-                && !p.contains("/target/")
-                && !p.contains("/.programmer-mcp/")
-                && !p.contains("/node_modules/")
-        })
         .collect();
 
     if changed_paths.is_empty() {
@@ -119,8 +277,7 @@ async fn notify_and_collect(
     let mgr = manager.clone();
     let cache = diag_cache.clone();
     tokio::spawn(async move {
-        // Wait for LSP to process the changes
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
         collect_diagnostics(&mgr, &cache, &changed_paths).await;
     });
 }

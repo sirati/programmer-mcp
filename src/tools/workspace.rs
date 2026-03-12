@@ -26,17 +26,16 @@ const PROJECT_MARKERS: &[(&str, &str)] = &[
     ("composer.json", "php"),
 ];
 
-struct SubProject {
-    path: String,
-    kind: String,
-    is_workspace: bool,
+pub struct SubProject {
+    pub path: String,
+    pub kind: String,
+    pub is_workspace: bool,
 }
 
-/// Scan the workspace and return a formatted description of subprojects and standalone files.
-pub fn workspace_info(workspace_root: &Path) -> String {
+/// Scan the workspace and return all detected subprojects.
+pub fn detect_subprojects(workspace_root: &Path) -> Vec<SubProject> {
     let mut subprojects = Vec::new();
     let mut standalone_by_dir: BTreeMap<String, Vec<String>> = BTreeMap::new();
-
     scan_recursive(
         workspace_root,
         workspace_root,
@@ -44,7 +43,33 @@ pub fn workspace_info(workspace_root: &Path) -> String {
         &mut standalone_by_dir,
         false,
     );
+    subprojects
+}
 
+/// Map a subproject kind (e.g. "python", "rust/cargo") to the LSP language name.
+pub fn subproject_kind_to_lsp_language(kind: &str) -> Option<&'static str> {
+    match kind {
+        "python" => Some("python"),
+        "rust/cargo" => Some("rust"),
+        "go" => Some("go"),
+        "node" => Some("typescript"), // node projects typically use ts/js LSP
+        "nix" => Some("nix"),
+        _ => None,
+    }
+}
+
+/// Scan the workspace and return a formatted description of subprojects and standalone files.
+pub fn workspace_info(workspace_root: &Path) -> String {
+    let subprojects = detect_subprojects(workspace_root);
+    let mut standalone_by_dir: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // Re-scan for standalone files (subprojects already collected)
+    scan_recursive(
+        workspace_root,
+        workspace_root,
+        &mut Vec::new(),
+        &mut standalone_by_dir,
+        false,
+    );
     format_output(&subprojects, &standalone_by_dir)
 }
 

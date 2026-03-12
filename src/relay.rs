@@ -10,7 +10,9 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const INIT_TIMEOUT_SECS: u64 = 10;
-const RELAY_TIMEOUT_SECS: u64 = 30;
+/// Per-read keepalive timeout: if no data arrives within this window, assume dead.
+/// Set high enough for LSP servers that need indexing time on first request.
+const KEEPALIVE_TIMEOUT_SECS: u64 = 60;
 
 /// A bidirectional MCP JSON-RPC relay over newline-delimited JSON.
 /// Generic over any AsyncRead + AsyncWrite pair.
@@ -45,12 +47,9 @@ impl<W: AsyncWrite + Unpin, R: AsyncRead + Unpin> RelayChannel<W, R> {
         write_line(&mut self.writer, request_json).await?;
         let expected_id = extract_id(request_json);
         tracing::debug!(?expected_id, "relay: waiting for response");
-        let result = tokio::time::timeout(
-            Duration::from_secs(RELAY_TIMEOUT_SECS),
-            read_matching_response(&mut self.reader, expected_id),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("relay timed out waiting for response"))?;
+        let result =
+            read_matching_response_keepalive(&mut self.reader, expected_id, KEEPALIVE_TIMEOUT_SECS)
+                .await;
         tracing::debug!("relay: got response");
         result
     }
@@ -76,12 +75,12 @@ impl<W: AsyncWrite + Unpin, R: AsyncRead + Unpin> RelayChannel<W, R> {
         write_line(&mut self.writer, &init_req).await?;
         tracing::debug!("relay: waiting for initialize response (timeout={INIT_TIMEOUT_SECS}s)");
 
-        tokio::time::timeout(
-            Duration::from_secs(INIT_TIMEOUT_SECS),
-            read_matching_response(&mut self.reader, Some(serde_json::json!(0))),
+        read_matching_response_keepalive(
+            &mut self.reader,
+            Some(serde_json::json!(0)),
+            INIT_TIMEOUT_SECS,
         )
         .await
-        .map_err(|_| anyhow::anyhow!("MCP initialize timed out after {INIT_TIMEOUT_SECS}s"))?
         .map_err(|e| anyhow::anyhow!("MCP initialize handshake failed: {e}"))?;
 
         tracing::debug!("relay: received initialize response, sending notifications/initialized");
@@ -108,41 +107,61 @@ async fn write_line(writer: &mut (impl AsyncWrite + Unpin), line: &str) -> anyho
     Ok(())
 }
 
-fn read_matching_response<'a, R: AsyncRead + Unpin>(
-    reader: &'a mut BufReader<R>,
+/// Read lines until we find the response matching `expected_id`.
+///
+/// Uses a per-read keepalive: as long as *any* data arrives within
+/// `keepalive_secs`, we keep waiting. Only if we get complete silence
+/// for the full keepalive window do we consider the connection dead.
+async fn read_matching_response_keepalive<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
     expected_id: Option<Value>,
-) -> impl std::future::Future<Output = anyhow::Result<String>> + 'a {
-    async move {
-        tracing::debug!(?expected_id, "relay: read_matching_response waiting for id");
-        let mut line = String::new();
-        loop {
-            line.clear();
-            tracing::trace!("relay: read_matching_response calling read_line");
-            let n = reader.read_line(&mut line).await?;
-            tracing::trace!(n, "relay: read_line returned {n} bytes");
-            if n == 0 {
+    keepalive_secs: u64,
+) -> anyhow::Result<String> {
+    tracing::debug!(
+        ?expected_id,
+        "relay: waiting for response (keepalive={keepalive_secs}s)"
+    );
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read_result = tokio::time::timeout(
+            Duration::from_secs(keepalive_secs),
+            reader.read_line(&mut line),
+        )
+        .await;
+        match read_result {
+            Err(_) => {
+                // No data within keepalive window — connection presumed dead
+                tracing::warn!(
+                    ?expected_id,
+                    "relay: no data for {keepalive_secs}s, connection presumed dead"
+                );
+                anyhow::bail!("relay keepalive timeout: no data for {keepalive_secs}s");
+            }
+            Ok(Err(e)) => return Err(e.into()),
+            Ok(Ok(0)) => {
                 tracing::warn!("relay: channel closed (EOF) while waiting for id={expected_id:?}");
                 anyhow::bail!("relay channel closed unexpectedly");
             }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
+            Ok(Ok(_n)) => {}
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+            let response_id = val.get("id").cloned();
+            if response_id == expected_id {
+                tracing::debug!(?expected_id, "relay: matched response id");
+                return Ok(trimmed.to_string());
             }
-            if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
-                let response_id = val.get("id").cloned();
-                tracing::trace!(?response_id, ?expected_id, "relay: got line with id");
-                if response_id == expected_id {
-                    tracing::debug!(?expected_id, "relay: matched response id");
-                    return Ok(trimmed.to_string());
-                }
-                tracing::debug!(
-                    ?response_id,
-                    ?expected_id,
-                    "relay: discarding unmatched relay line"
-                );
-            } else {
-                tracing::debug!(line = %trimmed, "relay: discarding non-JSON line");
-            }
+            tracing::trace!(
+                ?response_id,
+                ?expected_id,
+                "relay: discarding unmatched line (keepalive reset)"
+            );
+        } else {
+            tracing::trace!(line = %trimmed, "relay: discarding non-JSON line");
         }
     }
 }

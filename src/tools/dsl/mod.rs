@@ -294,6 +294,24 @@ mod tests {
     }
 
     #[test]
+    fn test_body_path_first_corrects() {
+        let parsed = parse_dsl("body src/foo.rs my_fn");
+        assert_eq!(parsed.operations.len(), 1);
+        assert_eq!(parsed.warnings.len(), 1);
+        assert!(
+            parsed.warnings[0].contains("src/foo.rs.{my_fn, .}"),
+            "expected path.{{sym, .}} format, got: {}",
+            parsed.warnings[0]
+        );
+        match &parsed.operations[0] {
+            Operation::Body { symbol_names, .. } => {
+                assert_eq!(symbol_names, &["my_fn"]);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_comments_stripped() {
         let parsed = parse_dsl("# this is a comment\nbody [foo] # inline");
         assert_eq!(parsed.operations.len(), 1);

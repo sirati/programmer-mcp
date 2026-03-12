@@ -13,7 +13,7 @@ use lsp_types::SymbolInformation;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::lsp::client::{LspClient, LspClientError};
 
@@ -138,7 +138,7 @@ impl SymbolCache {
             index.retain(|(_name, uri, _line), _| uri != file_uri);
         }
 
-        debug!(file_uri, "symbol cache invalidated for file");
+        trace!(file_uri, "symbol cache invalidated for file");
     }
 
     /// Seed the cache by querying for common prefixes.

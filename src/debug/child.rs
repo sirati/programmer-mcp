@@ -9,7 +9,8 @@ use tokio::sync::Mutex;
 
 use super::relay::RelayChannel;
 
-const LOG_BUFFER_SIZE: usize = 2000;
+/// Maximum log buffer size in bytes (500 MB).
+const LOG_BUFFER_MAX_BYTES: usize = 500 * 1024 * 1024;
 const READY_CHECK_INTERVAL_MS: u64 = 300;
 const READY_CHECK_ATTEMPTS: u32 = 10; // 3 seconds total
 
@@ -34,9 +35,49 @@ impl ExitInfo {
     }
 }
 
+/// Ring buffer of log lines with byte-based eviction.
+pub struct LogBuffer {
+    lines: VecDeque<String>,
+    total_bytes: usize,
+}
+
+impl LogBuffer {
+    fn new() -> Self {
+        Self {
+            lines: VecDeque::new(),
+            total_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, line: String) {
+        self.total_bytes += line.len();
+        self.lines.push_back(line);
+        while self.total_bytes > LOG_BUFFER_MAX_BYTES {
+            if let Some(old) = self.lines.pop_front() {
+                self.total_bytes -= old.len();
+            } else {
+                break;
+            }
+        }
+    }
+
+    pub fn search(&self, query: Option<&str>, limit: usize) -> Vec<String> {
+        self.lines
+            .iter()
+            .filter(|line| query.map_or(true, |q| line.contains(q)))
+            .cloned()
+            .rev()
+            .take(limit)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    }
+}
+
 pub struct ChildHandle {
     relay: Mutex<RelayChannel>,
-    pub log_buffer: Arc<Mutex<VecDeque<String>>>,
+    pub log_buffer: Arc<Mutex<LogBuffer>>,
     process: Mutex<Child>,
     pub started_at: Instant,
 }
@@ -64,7 +105,7 @@ impl ChildHandle {
             .take()
             .ok_or_else(|| anyhow::anyhow!("no stderr"))?;
 
-        let log_buffer = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_BUFFER_SIZE)));
+        let log_buffer = Arc::new(Mutex::new(LogBuffer::new()));
         spawn_log_reader(stderr, log_buffer.clone());
 
         Ok(Self {
@@ -112,19 +153,11 @@ impl ChildHandle {
 
     pub async fn search_logs(&self, query: Option<&str>, limit: usize) -> Vec<String> {
         let buf = self.log_buffer.lock().await;
-        buf.iter()
-            .filter(|line| query.map_or(true, |q| line.contains(q)))
-            .cloned()
-            .rev()
-            .take(limit)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
+        buf.search(query, limit)
     }
 }
 
-fn spawn_log_reader(stderr: tokio::process::ChildStderr, log_buffer: Arc<Mutex<VecDeque<String>>>) {
+fn spawn_log_reader(stderr: tokio::process::ChildStderr, log_buffer: Arc<Mutex<LogBuffer>>) {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     tokio::spawn(async move {
@@ -136,12 +169,8 @@ fn spawn_log_reader(stderr: tokio::process::ChildStderr, log_buffer: Arc<Mutex<V
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
                     let trimmed = line.trim_end().to_string();
-                    tracing::debug!(target: "child", "{trimmed}");
                     let mut buf = log_buffer.lock().await;
-                    if buf.len() >= LOG_BUFFER_SIZE {
-                        buf.pop_front();
-                    }
-                    buf.push_back(trimmed);
+                    buf.push(trimmed);
                 }
             }
         }

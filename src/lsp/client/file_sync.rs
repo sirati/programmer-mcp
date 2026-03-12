@@ -35,9 +35,11 @@ impl LspClient {
             },
         };
 
+        tracing::debug!(lsp = %self.language(), path, "sending didOpen notification");
         self.rpc
             .notification(DidOpenTextDocument::METHOD, RpcParams(params))
             .await?;
+        tracing::debug!(lsp = %self.language(), path, "didOpen sent successfully");
 
         self.open_files
             .write()

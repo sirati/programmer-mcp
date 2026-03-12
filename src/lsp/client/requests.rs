@@ -1,6 +1,9 @@
 //! LSP query request methods.
 
+use std::time::Duration;
+
 use jsonrpsee::core::client::ClientT;
+use jsonrpsee::core::traits::ToRpcParams;
 use lsp_types::{
     request::*, CodeActionContext, CodeActionOrCommand, CodeActionParams, DocumentDiagnosticParams,
     DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FormattingOptions,
@@ -8,10 +11,31 @@ use lsp_types::{
     SymbolInformation, TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, Uri,
     WorkspaceEdit, WorkspaceSymbolParams,
 };
+use serde::de::DeserializeOwned;
 
 use super::{LspClient, LspClientError, RpcParams};
 
+/// Timeout for individual LSP requests.
+const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
 impl LspClient {
+    /// Send an LSP request with a timeout. Returns an error if the LSP doesn't
+    /// respond within [`LSP_REQUEST_TIMEOUT`].
+    async fn timed_request<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: impl ToRpcParams + Send,
+    ) -> Result<R, LspClientError> {
+        match tokio::time::timeout(LSP_REQUEST_TIMEOUT, self.rpc.request(method, params)).await {
+            Ok(result) => Ok(result?),
+            Err(_elapsed) => Err(LspClientError::Other(format!(
+                "LSP request '{method}' timed out after {}s (language={})",
+                LSP_REQUEST_TIMEOUT.as_secs(),
+                self.language()
+            ))),
+        }
+    }
+
     pub async fn workspace_symbol(
         &self,
         query: &str,
@@ -22,8 +46,7 @@ impl LspClient {
         };
 
         let raw: serde_json::Value = self
-            .rpc
-            .request(WorkspaceSymbolRequest::METHOD, RpcParams(params))
+            .timed_request(WorkspaceSymbolRequest::METHOD, RpcParams(params))
             .await?;
 
         Ok(serde_json::from_value(raw).unwrap_or_default())
@@ -39,10 +62,11 @@ impl LspClient {
             partial_result_params: Default::default(),
         };
 
+        tracing::debug!(lsp = %self.language(), uri = ?uri, "sending documentSymbol request");
         let result: DocumentSymbolResponse = self
-            .rpc
-            .request(DocumentSymbolRequest::METHOD, RpcParams(params))
+            .timed_request(DocumentSymbolRequest::METHOD, RpcParams(params))
             .await?;
+        tracing::debug!(lsp = %self.language(), "documentSymbol response received");
 
         Ok(result)
     }
@@ -65,12 +89,8 @@ impl LspClient {
             partial_result_params: Default::default(),
         };
 
-        let result: Option<Vec<Location>> = self
-            .rpc
-            .request(References::METHOD, RpcParams(params))
-            .await?;
-
-        Ok(result)
+        self.timed_request(References::METHOD, RpcParams(params))
+            .await
     }
 
     pub async fn hover(
@@ -86,12 +106,8 @@ impl LspClient {
             work_done_progress_params: Default::default(),
         };
 
-        let result: Option<Hover> = self
-            .rpc
-            .request(HoverRequest::METHOD, RpcParams(params))
-            .await?;
-
-        Ok(result)
+        self.timed_request(HoverRequest::METHOD, RpcParams(params))
+            .await
     }
 
     pub async fn rename(
@@ -109,10 +125,7 @@ impl LspClient {
             work_done_progress_params: Default::default(),
         };
 
-        let result: Option<WorkspaceEdit> =
-            self.rpc.request(Rename::METHOD, RpcParams(params)).await?;
-
-        Ok(result)
+        self.timed_request(Rename::METHOD, RpcParams(params)).await
     }
 
     pub async fn diagnostic(&self, uri: &Uri) -> Result<(), LspClientError> {
@@ -125,8 +138,7 @@ impl LspClient {
         };
 
         let _: serde_json::Value = match self
-            .rpc
-            .request("textDocument/diagnostic", RpcParams(params))
+            .timed_request("textDocument/diagnostic", RpcParams(params))
             .await
         {
             Ok(v) => v,
@@ -147,7 +159,6 @@ impl LspClient {
         only: Option<Vec<lsp_types::CodeActionKind>>,
     ) -> Result<Option<Vec<CodeActionOrCommand>>, LspClientError> {
         let diagnostics = self.get_cached_diagnostics(uri).await;
-        // Filter diagnostics that overlap the range
         let relevant_diags: Vec<_> = diagnostics
             .into_iter()
             .filter(|d| ranges_overlap(&d.range, &range))
@@ -165,12 +176,8 @@ impl LspClient {
             partial_result_params: Default::default(),
         };
 
-        let result: Option<Vec<CodeActionOrCommand>> = self
-            .rpc
-            .request(CodeActionRequest::METHOD, RpcParams(params))
-            .await?;
-
-        Ok(result)
+        self.timed_request(CodeActionRequest::METHOD, RpcParams(params))
+            .await
     }
 
     /// Format a document, returning the text edits (caller applies them).
@@ -187,8 +194,7 @@ impl LspClient {
             work_done_progress_params: Default::default(),
         };
         let result: Option<Vec<TextEdit>> = self
-            .rpc
-            .request(Formatting::METHOD, RpcParams(params))
+            .timed_request(Formatting::METHOD, RpcParams(params))
             .await?;
         Ok(result.unwrap_or_default())
     }
@@ -206,11 +212,8 @@ impl LspClient {
             },
             work_done_progress_params: Default::default(),
         };
-        let result: Option<Vec<lsp_types::CallHierarchyItem>> = self
-            .rpc
-            .request(CallHierarchyPrepare::METHOD, RpcParams(params))
-            .await?;
-        Ok(result)
+        self.timed_request(CallHierarchyPrepare::METHOD, RpcParams(params))
+            .await
     }
 
     /// Get incoming calls (callers) for a call hierarchy item.
@@ -223,11 +226,8 @@ impl LspClient {
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
         };
-        let result: Option<Vec<lsp_types::CallHierarchyIncomingCall>> = self
-            .rpc
-            .request(CallHierarchyIncomingCalls::METHOD, RpcParams(params))
-            .await?;
-        Ok(result)
+        self.timed_request(CallHierarchyIncomingCalls::METHOD, RpcParams(params))
+            .await
     }
 
     /// Get outgoing calls (callees) from a call hierarchy item.
@@ -240,11 +240,8 @@ impl LspClient {
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
         };
-        let result: Option<Vec<lsp_types::CallHierarchyOutgoingCall>> = self
-            .rpc
-            .request(CallHierarchyOutgoingCalls::METHOD, RpcParams(params))
-            .await?;
-        Ok(result)
+        self.timed_request(CallHierarchyOutgoingCalls::METHOD, RpcParams(params))
+            .await
     }
 
     /// Send an arbitrary LSP request and return the raw JSON response.
@@ -253,8 +250,7 @@ impl LspClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, LspClientError> {
-        let result: serde_json::Value = self.rpc.request(method, RpcParams(params)).await?;
-        Ok(result)
+        self.timed_request(method, RpcParams(params)).await
     }
 }
 

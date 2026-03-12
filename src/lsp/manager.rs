@@ -79,6 +79,13 @@ impl LspManager {
         }
     }
 
+    /// Detect subprojects in the workspace and register their roots as
+    /// additional workspace folders with the appropriate LSP clients.
+    // NOTE: Workspace folder registration was removed. Adding subproject folders
+    // causes LSPs like basedpyright to index all files in the folder (potentially
+    // thousands), blocking all requests during indexing. Instead, we rely on
+    // didOpen/didClose for individual files, which works for all LSPs.
+
     /// Shutdown all LSP clients.
     pub async fn shutdown(&self) {
         for client in self.clients.values() {

@@ -151,8 +151,10 @@ pub fn handle_symbol_cmd(
     if !trimmed.starts_with('[') {
         let items: Vec<&str> = trimmed.split_whitespace().collect();
         if items.len() > 1 && looks_like_path(items[0]) {
+            let sym_list = items[1..].join(", ");
             warnings.push(format!(
-                "incorrect arguments, corrected to: `{cmd} [{trimmed}]`"
+                "incorrect arguments, corrected to: `{cmd} {}.{{{sym_list}, .}}`",
+                items[0],
             ));
             // Re-parse as bracket form — path becomes search context
             let bracket_args = format!("[{trimmed}]");
