@@ -22,6 +22,7 @@ use config::Config;
 use debug::server::DebugServer;
 use lsp::manager::LspManager;
 use server::ProgrammerServer;
+use tools::diagnostics_cache::DiagnosticsCache;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -151,8 +152,7 @@ async fn run_normal_server(config: Config) -> anyhow::Result<()> {
     let manager = Arc::new(LspManager::start(&config.lsp_specs, &workspace).await?);
     let message_bus = ipc::HumanMessageBus::start(&workspace);
     let background = BackgroundManager::new(&workspace);
-
-    let diag_cache = tools::diagnostics_cache::DiagnosticsCache::new(&workspace);
+    let diag_cache = DiagnosticsCache::new(&workspace);
 
     let watcher_manager = manager.clone();
     let watcher_cache = diag_cache.clone();

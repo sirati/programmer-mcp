@@ -45,22 +45,6 @@ pub fn add_line_numbers(text: &str, start_line: u32) -> String {
     result
 }
 
-/// Extract text from a file at a given range.
-pub fn extract_text_from_location(loc: &Location) -> Result<String, std::io::Error> {
-    let path = uri_to_path(&loc.uri).ok_or_else(|| std::io::Error::other("invalid file URI"))?;
-    let content = std::fs::read_to_string(&path)?;
-    let lines: Vec<&str> = content.lines().collect();
-
-    let start = loc.range.start.line as usize;
-    let end = (loc.range.end.line as usize).min(lines.len().saturating_sub(1));
-
-    if start >= lines.len() {
-        return Ok(String::new());
-    }
-
-    Ok(lines[start..=end].join("\n"))
-}
-
 /// Find the full range of the symbol containing `position` via documentSymbol.
 pub async fn find_containing_symbol_range(
     client: &Arc<LspClient>,
@@ -155,17 +139,6 @@ pub fn format_lines_with_gaps(all_lines: &[&str], visible: &BTreeSet<usize>) -> 
     }
 
     result
-}
-
-/// Format a location for display: "file:line:col"
-pub fn format_location(loc: &Location) -> String {
-    let path = uri_to_path(&loc.uri).unwrap_or_else(|| loc.uri.as_str().to_string());
-    format!(
-        "{}:{}:{}",
-        path,
-        loc.range.start.line + 1,
-        loc.range.start.character + 1
-    )
 }
 
 /// Convert 1-indexed line/column to LSP 0-indexed Position.

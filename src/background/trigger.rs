@@ -42,7 +42,11 @@ pub struct TriggerResult {
 
 impl std::fmt::Display for TriggerResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "--- Trigger '{}' ---\n", self.trigger_name)?;
+        writeln!(
+            f,
+            "--- Trigger '{}' matched: {} ---",
+            self.trigger_name, self.matched_line
+        )?;
         for line in &self.context {
             writeln!(f, "{line}")?;
         }
@@ -133,6 +137,7 @@ impl TriggerManager {
     }
 
     /// Check if any trigger with the given name has fired.
+    #[allow(dead_code)] // TODO: expose via DSL
     pub fn has_fired(&self, name: &str) -> bool {
         self.pending_results.iter().any(|r| r.trigger_name == name)
     }
@@ -143,6 +148,7 @@ impl TriggerManager {
     }
 
     /// List all defined triggers.
+    #[allow(dead_code)] // TODO: expose via DSL
     pub fn list(&self) -> Vec<&TriggerConfig> {
         self.configs.values().collect()
     }

@@ -29,6 +29,7 @@ impl BackgroundProcess {
     }
 
     /// Get the last N output lines.
+    #[allow(dead_code)] // TODO: expose via DSL
     pub fn tail(&self, n: usize) -> Vec<String> {
         let buf = self.output.lock().unwrap();
         buf.iter().rev().take(n).rev().cloned().collect()
@@ -171,6 +172,7 @@ impl ProcessManager {
     }
 
     /// List all running processes.
+    #[allow(dead_code)] // TODO: expose via DSL
     pub fn list(&self) -> Vec<(&str, Option<&str>)> {
         self.processes
             .values()

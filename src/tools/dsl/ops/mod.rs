@@ -10,9 +10,8 @@ pub mod process;
 pub mod task;
 
 pub use lsp::{
-    handle_apply_action, handle_body, handle_code_actions, handle_definition, handle_diagnostics,
-    handle_docstring, handle_format, handle_hover, handle_impls, handle_list_symbols,
-    handle_references, handle_rename_symbol,
+    handle_apply_action, handle_code_action, handle_code_actions, handle_diagnostics,
+    handle_format, handle_hover, handle_list_symbols, handle_rename_symbol, handle_symbol_cmd,
 };
 pub use process::{
     handle_await_trigger, handle_define_trigger, handle_search_output, handle_start_process,
@@ -28,7 +27,7 @@ pub use task::{
 /// Recognized source-file extensions used for optional-extension resolution.
 pub const SOURCE_EXTENSIONS: &[&str] = &[
     "rs", "py", "go", "ts", "tsx", "js", "jsx", "c", "cpp", "cc", "h", "hpp", "java", "kt", "rb",
-    "cs", "swift", "zig", "lua", "ml", "mli",
+    "cs", "swift", "zig", "lua", "ml", "mli", "nix", "sh",
 ];
 
 /// Normalize `..` and `.` components without hitting the filesystem.

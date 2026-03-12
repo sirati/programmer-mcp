@@ -128,10 +128,10 @@ because body just takes one argument, we should support it, but still warn! like
 
 
 
-please add support so that subproject / workspaces inside of folders of the main directory are automatically discovered. so are standalone files. add a command workspace-info that shows all workspaces and standalone files (for files: by number in folder not name, unless its <=3 in the folder)
+✅ please add support so that subproject / workspaces inside of folders of the main directory are automatically discovered. so are standalone files. add a command workspace-info that shows all workspaces and standalone files (for files: by number in folder not name, unless its <=3 in the folder)
 
 
-we should expose refactor commands that lsp support 
+✅ we should expose refactor commands that lsp support 
 
 test with other language servers than just rust.
 
@@ -139,18 +139,77 @@ list_symbols when done on a folder should act like ls
 
 
 
-src/lsp/client/mod.rs:120:13: warning: use of deprecated field `lsp_types::InitializeParams::root_path`: Use `root_uri` instead when possible
-src/lsp/client/mod.rs:164:25: warning: unused import: `futures::StreamExt`
-src/background/process.rs:32:12: warning: method `tail` is never used
-src/background/process.rs:174:12: warning: method `list` is never used
-src/background/trigger.rs:39:9: warning: field `matched_line` is never read
-src/background/trigger.rs:136:12: warning: methods `has_fired` and `list` are never used
-src/ipc.rs:86:12: warning: method `socket_path` is never used
-src/lsp/client/requests.rs:19:9: warning: field `command` is never read
-src/lsp/client/requests.rs:58:18: warning: method `goto_definition` is never used
-src/lsp/detect_lang.rs:56:8: warning: function `language_extensions` is never used
-src/relay.rs:101:12: warning: method `is_initialized` is never used
-src/tools/exec_helpers.rs:15:14: warning: function `execute_on_clients` is never used
-src/tools/formatting.rs:49:8: warning: function `extract_text_from_location` is never used
-src/tools/formatting.rs:161:8: warning: function `format_location` is never used
-lets fix these warnings, probably also means that e.g. triggers are not completely implemented!
+✅ fix compiler warnings (dead code removed, incomplete features annotated with #[allow(dead_code)] TODO)
+
+
+
+
+
+{
+  "commands": "body [TriggerResult TriggerResult.fmt]"
+}
+no results for body
+
+--- Auto-diagnostics: /home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs ---
+/home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs:119:13: warning: use of deprecated field `lsp_types::InitializeParams::root_uri`: Use `workspace_folders` instead when possible
+`#[warn(deprecated)]` on by default
+/home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs:120:13: warning: use of deprecated field `lsp_types::InitializeParams::root_path`: Use `root_uri` instead when possible
+/home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs:164:25: warning: unused import: `futures::StreamExt`
+`#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+--- Auto-diagnostics: /home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs ---
+/home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs:119:13: warning: use of deprecated field `lsp_types::InitializeParams::root_uri`: Use `workspace_folders` instead when possible
+`#[warn(deprecated)]` on by default
+/home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs:120:13: warning: use of deprecated field `lsp_types::InitializeParams::root_path`: Use `root_uri` instead when possible
+/home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs:164:25: warning: unused import: `futures::StreamExt`
+`#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+--- Auto-diagnostics: /home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs ---
+/home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs:119:13: warning: use of deprecated field `lsp_types::InitializeParams::root_uri`: Use `workspace_folders` instead when possible
+`#[warn(deprecated)]` on by default
+/home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs:120:13: warning: use of deprecated field `lsp_types::InitializeParams::root_path`: Use `root_uri` instead when possible
+/home/sirati/devel/rust/programmer-mcp/src/lsp/client/mod.rs:164:25: warning: unused import: `futures::StreamExt`
+`#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+There are multiple problems here:
+1. the diagnostics are attached to a message, even though the edits made since the last command did not change the diagnostics, and only new ones should be attached
+2. the path is very verbose instead if should be like this:
+```
+New diagnosstics based on recent edits:
+cd src/lsp/client  
+2 new warning for mod.rs:
+use of deprecated field:
+L119:13 `lsp_types::InitializeParams::root_uri`: Use `workspace_folders` instead when possible
+L120:13: `lsp_types::InitializeParams::root_path`: Use `root_uri` instead when possible
+{another type of warning}:
+L159:13 {case specific submessage}
+
+1 new warning for helper.rs:
+{yet another type of warning}:
+L59:23 {case specific submessage}
+
+1 new error for helper.rs:
+{yet another type of error}:
+L224:43 {case specific submessage}
+
+cd ../server
+{more}
+
+```
+  - absolute path always converted to relative path based on project root
+  - cd used to allow for shorter paths which multiple in a location
+  - general goal is to keep everything short, concise and without repeats
+  - grouping by error/warning type
+  - noise from message has been removed: "`#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default" 
+
+3. if the same warning happens multiple times the locations inside a file should be grouped
+4. within each group, the locations should be sorted by line number and column number
+5. groups should be sorted by the first line number 
+
+further
+
+{
+  "commands": "body [TriggerResult TriggerResult.fmt]"
+}
+no results for body
+did not cd into the location of TriggerResult if the fuzzy logic completely fails based on path restricted logic, the path should one step at a time be traversed upwards (e.g. cd ..) and at that location ALL sublocation should be searched again using the fuzzy logic. this stops at the project root of course cd cannot leave the project root. if this path traversal happens, it should say found symbol {symbol} as {fuzzy resolved} at unexpected location {location with e.g. file extensions removed, reletative path to where the command was issued}. if multiple symbols are resolved at the same path it should be like {symbol1 symbal2.{. subsymbol}}} as {fuzzy1 fuzzy2.{. fuzzysubsymbol}} respectively, so avoid repeating.

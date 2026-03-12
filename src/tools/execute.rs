@@ -69,6 +69,7 @@ async fn execute_one(
         | Operation::RenameSymbol { .. }
         | Operation::ListSymbols { .. }
         | Operation::CodeActions { .. }
+        | Operation::CodeAction { .. }
         | Operation::ApplyCodeAction { .. }
         | Operation::Format { .. }
         | Operation::RawLspRequest { .. } => execute_lsp::execute_file_op(manager, op).await,

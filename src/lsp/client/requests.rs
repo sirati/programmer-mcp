@@ -4,20 +4,12 @@ use jsonrpsee::core::client::ClientT;
 use lsp_types::{
     request::*, CodeActionContext, CodeActionOrCommand, CodeActionParams, DocumentDiagnosticParams,
     DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FormattingOptions,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, Location, Position, Range,
-    ReferenceContext, ReferenceParams, RenameParams, SymbolInformation, TextDocumentIdentifier,
-    TextDocumentPositionParams, TextEdit, Uri, WorkspaceEdit, WorkspaceSymbolParams,
+    Hover, HoverParams, Location, Position, Range, ReferenceContext, ReferenceParams, RenameParams,
+    SymbolInformation, TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, Uri,
+    WorkspaceEdit, WorkspaceSymbolParams,
 };
 
 use super::{LspClient, LspClientError, RpcParams};
-
-/// Simplified code action info returned to the tools layer.
-pub struct CodeActionInfo {
-    pub title: String,
-    pub kind: Option<String>,
-    pub edit: Option<WorkspaceEdit>,
-    pub command: Option<lsp_types::Command>,
-}
 
 impl LspClient {
     pub async fn workspace_symbol(
@@ -50,28 +42,6 @@ impl LspClient {
         let result: DocumentSymbolResponse = self
             .rpc
             .request(DocumentSymbolRequest::METHOD, RpcParams(params))
-            .await?;
-
-        Ok(result)
-    }
-
-    pub async fn goto_definition(
-        &self,
-        uri: &Uri,
-        position: Position,
-    ) -> Result<Option<GotoDefinitionResponse>, LspClientError> {
-        let params = GotoDefinitionParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                position,
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
-
-        let result: Option<GotoDefinitionResponse> = self
-            .rpc
-            .request(GotoDefinition::METHOD, RpcParams(params))
             .await?;
 
         Ok(result)
@@ -169,51 +139,38 @@ impl LspClient {
         Ok(())
     }
 
-    /// Get available code actions at a position.
-    pub async fn code_actions(
+    /// Get available code actions at a range, optionally filtered by kind.
+    pub async fn code_action(
         &self,
-        file_path: &str,
-        line: u32,
-        column: u32,
-    ) -> Result<Vec<CodeActionInfo>, LspClientError> {
-        let uri =
-            crate::tools::formatting::path_to_uri(file_path).map_err(LspClientError::Other)?;
-        let pos = Position::new(line.saturating_sub(1), column.saturating_sub(1));
-        let range = Range::new(pos, pos);
-        let diagnostics = self.get_cached_diagnostics(&uri).await;
+        uri: &Uri,
+        range: Range,
+        only: Option<Vec<lsp_types::CodeActionKind>>,
+    ) -> Result<Option<Vec<CodeActionOrCommand>>, LspClientError> {
+        let diagnostics = self.get_cached_diagnostics(uri).await;
+        // Filter diagnostics that overlap the range
+        let relevant_diags: Vec<_> = diagnostics
+            .into_iter()
+            .filter(|d| ranges_overlap(&d.range, &range))
+            .collect();
+
         let params = CodeActionParams {
-            text_document: TextDocumentIdentifier { uri },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             range,
             context: CodeActionContext {
-                diagnostics,
-                only: None,
-                trigger_kind: None,
+                diagnostics: relevant_diags,
+                only,
+                ..Default::default()
             },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
         };
+
         let result: Option<Vec<CodeActionOrCommand>> = self
             .rpc
             .request(CodeActionRequest::METHOD, RpcParams(params))
             .await?;
-        Ok(result
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) => Some(CodeActionInfo {
-                    title: ca.title,
-                    kind: ca.kind.map(|k| k.as_str().to_string()),
-                    edit: ca.edit,
-                    command: ca.command,
-                }),
-                CodeActionOrCommand::Command(cmd) => Some(CodeActionInfo {
-                    title: cmd.title.clone(),
-                    kind: None,
-                    edit: None,
-                    command: Some(cmd),
-                }),
-            })
-            .collect())
+
+        Ok(result)
     }
 
     /// Format a document, returning the text edits (caller applies them).
@@ -245,4 +202,8 @@ impl LspClient {
         let result: serde_json::Value = self.rpc.request(method, RpcParams(params)).await?;
         Ok(result)
     }
+}
+
+fn ranges_overlap(a: &Range, b: &Range) -> bool {
+    a.start <= b.end && b.start <= a.end
 }

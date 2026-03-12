@@ -81,11 +81,6 @@ impl HumanMessageBus {
         let mut msgs = self.pending.lock().await;
         std::mem::take(&mut *msgs)
     }
-
-    /// Get the socket path for display/logging.
-    pub fn socket_path(&self) -> &Path {
-        &self.socket_path
-    }
 }
 
 impl Drop for HumanMessageBus {

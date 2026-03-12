@@ -97,10 +97,6 @@ impl<W: AsyncWrite + Unpin, R: AsyncRead + Unpin> RelayChannel<W, R> {
         self.initialized = true;
         Ok(())
     }
-
-    pub fn is_initialized(&self) -> bool {
-        self.initialized
-    }
 }
 
 async fn write_line(writer: &mut (impl AsyncWrite + Unpin), line: &str) -> anyhow::Result<()> {

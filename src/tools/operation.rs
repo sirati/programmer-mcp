@@ -83,12 +83,31 @@ pub enum Operation {
         max_depth: usize,
         language: Option<String>,
     },
-    /// Get available code actions at a position.
+    /// Get available code actions at a position (simple).
     CodeActions {
         #[serde(rename = "filePath")]
         file_path: String,
         line: u32,
         column: u32,
+        language: Option<String>,
+    },
+    /// Request code actions with range and kind filtering.
+    CodeAction {
+        #[serde(rename = "filePath")]
+        file_path: String,
+        /// Line number (1-indexed)
+        line: u32,
+        /// Column number (1-indexed)
+        column: u32,
+        /// End line (1-indexed, defaults to same as line)
+        #[serde(rename = "endLine")]
+        end_line: Option<u32>,
+        /// End column (1-indexed, defaults to same as column)
+        #[serde(rename = "endColumn")]
+        end_column: Option<u32>,
+        /// Optional: only return actions of these kinds (e.g. "refactor", "quickfix")
+        #[serde(default)]
+        kinds: Vec<String>,
         language: Option<String>,
     },
     /// Apply a code action by index (from a previous code_actions call).

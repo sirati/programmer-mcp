@@ -148,6 +148,28 @@ pub async fn execute_file_op(manager: &LspManager, op: Operation) -> OperationRe
             })
             .await
         }
+        Operation::CodeAction {
+            file_path,
+            line,
+            column,
+            end_line,
+            end_column,
+            kinds,
+            language,
+        } => {
+            let clients = manager.resolve(language.as_deref(), Some(&file_path));
+            execute_on_first("code_action", clients, |client| {
+                let path = file_path.clone();
+                let ks = kinds.clone();
+                async move {
+                    code_actions::get_code_actions_range(
+                        &client, &path, line, column, end_line, end_column, &ks,
+                    )
+                    .await
+                }
+            })
+            .await
+        }
         Operation::ApplyCodeAction {
             file_path,
             line,

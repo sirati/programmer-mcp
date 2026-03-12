@@ -114,10 +114,10 @@ impl LspClient {
             .parse()
             .map_err(|e| LspClientError::Other(format!("bad workspace URI: {e}")))?;
 
+        #[allow(deprecated)] // root_uri needed for older LSP servers
         let params = InitializeParams {
             process_id: Some(std::process::id()),
             root_uri: Some(workspace_uri.clone()),
-            root_path: Some(workspace_str.into()),
             workspace_folders: Some(vec![WorkspaceFolder {
                 uri: workspace_uri,
                 name: workspace
@@ -161,7 +161,6 @@ impl LspClient {
         {
             Ok(mut sub) => {
                 tokio::spawn(async move {
-                    use futures::StreamExt;
                     while let Some(Ok(params)) = sub.next().await {
                         let count = params.diagnostics.len();
                         let uri_key = params.uri.as_str().to_string();

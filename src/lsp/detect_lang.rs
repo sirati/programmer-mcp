@@ -50,22 +50,3 @@ pub fn detect_language_id(path: &str) -> &'static str {
         _ => "",
     }
 }
-
-/// Map a user-provided language name to possible file extensions.
-/// Used when searching for files by language.
-pub fn language_extensions(language: &str) -> &'static [&'static str] {
-    match language.to_lowercase().as_str() {
-        "rust" => &["rs"],
-        "go" => &["go"],
-        "python" => &["py", "pyi"],
-        "javascript" => &["js", "mjs", "cjs"],
-        "typescript" => &["ts", "mts", "cts"],
-        "c" => &["c", "h"],
-        "cpp" | "c++" => &["cpp", "cxx", "cc", "hpp", "h"],
-        "java" => &["java"],
-        "ruby" => &["rb"],
-        "nix" => &["nix"],
-        "zig" => &["zig"],
-        _ => &[],
-    }
-}
