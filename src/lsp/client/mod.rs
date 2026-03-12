@@ -17,7 +17,7 @@ use jsonrpsee::core::traits::ToRpcParams;
 use lsp_types::notification::{Exit, Initialized, Notification, PublishDiagnostics};
 use lsp_types::request::{Initialize, Request, Shutdown};
 use lsp_types::{
-    ClientInfo, Diagnostic, InitializeParams, InitializeResult, InitializedParams,
+    ClientInfo, Diagnostic, InitializeParams, InitializeResult, InitializedParams, OneOf,
     PublishDiagnosticsParams, Uri,
 };
 use serde::Serialize;
@@ -65,6 +65,7 @@ pub struct LspClient {
     open_files: Arc<RwLock<HashMap<String, OpenFileInfo>>>,
     diagnostics: Arc<RwLock<HashMap<String, Vec<Diagnostic>>>>,
     symbol_cache: SymbolCache,
+    has_workspace_symbol: std::sync::atomic::AtomicBool,
     _child: tokio::process::Child,
 }
 
@@ -108,6 +109,7 @@ impl LspClient {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             diagnostics: Arc::new(RwLock::new(HashMap::new())),
             symbol_cache: SymbolCache::new(),
+            has_workspace_symbol: std::sync::atomic::AtomicBool::new(false),
             _child: child,
         })
     }
@@ -151,7 +153,20 @@ impl LspClient {
             .notification(Initialized::METHOD, RpcParams(InitializedParams {}))
             .await?;
 
-        info!(language = %self.language, "LSP initialized");
+        // Record whether server supports workspace/symbol.
+        let has_ws_sym = result
+            .capabilities
+            .workspace_symbol_provider
+            .as_ref()
+            .map(|p| match p {
+                OneOf::Left(b) => *b,
+                OneOf::Right(_) => true,
+            })
+            .unwrap_or(false);
+        self.has_workspace_symbol
+            .store(has_ws_sym, std::sync::atomic::Ordering::Relaxed);
+
+        info!(language = %self.language, has_workspace_symbol = has_ws_sym, "LSP initialized");
 
         Ok(result)
     }
@@ -268,5 +283,10 @@ impl LspClient {
 
     pub fn symbol_cache(&self) -> &SymbolCache {
         &self.symbol_cache
+    }
+
+    pub fn has_workspace_symbol(&self) -> bool {
+        self.has_workspace_symbol
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }

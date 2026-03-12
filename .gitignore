@@ -33,6 +33,7 @@ result-*
 
 #Reference sources - contains downloaded projects so the sourcecode is available to the AI
 #ref-srcs/ #if i have it in .gitignore then claude cannot see it
+ref-srcs/httpx/
 
 # direnv
 .direnv/

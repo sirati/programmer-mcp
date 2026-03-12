@@ -120,6 +120,58 @@ pub async fn find_symbol_with_fallback(
             }
         }
 
+        // Steps 8 & 9: index-based parent.child lookup (for LSPs without workspace/symbol)
+        let parent_from_index = client.symbol_cache().exact_search(parent).await;
+        if !parent_from_index.is_empty() {
+            // Index found parent — scan its file(s) for the child
+            let mut uris: Vec<Uri> = Vec::new();
+            for sym in &parent_from_index {
+                let uri = sym.location.uri.clone();
+                if !uris.contains(&uri) {
+                    uris.push(uri);
+                }
+            }
+            for uri in &uris {
+                if let Some(path) = uri_to_path(uri) {
+                    let _ = client.open_file(&path).await;
+                }
+                let doc_symbols = match client.document_symbol(uri).await {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let exact = collect_doc_symbol_matches(&doc_symbols, uri, child, false);
+                if !exact.is_empty() {
+                    debug!(
+                        parent,
+                        child, "parent.child: found via index parent + doc child"
+                    );
+                    return Ok(exact);
+                }
+            }
+        }
+
+        // Also try child-only from index
+        let child_from_index = client.symbol_cache().exact_search(child).await;
+        if !child_from_index.is_empty() {
+            // Filter to those whose container matches parent
+            let filtered: Vec<_> = child_from_index
+                .into_iter()
+                .filter(|s| {
+                    s.container_name
+                        .as_deref()
+                        .map(|c| container_matches(c, parent, false))
+                        .unwrap_or(false)
+                })
+                .collect();
+            if !filtered.is_empty() {
+                debug!(
+                    parent,
+                    child, "parent.child: found via index child + container filter"
+                );
+                return Ok(filtered);
+            }
+        }
+
         // Fall through to plain search on the full name.
     }
 
@@ -153,6 +205,27 @@ pub async fn find_symbol_with_fallback(
         }
     }
 
+    // ── symbol index exact lookup ──────────────────────────────────────────
+    // The index is populated from workspace/symbol or document symbol scans.
+    let exact_from_index = client.symbol_cache().exact_search(name).await;
+    if !exact_from_index.is_empty() {
+        debug!(
+            name,
+            count = exact_from_index.len(),
+            "found via symbol index (exact)"
+        );
+        return Ok(exact_from_index);
+    }
+
+    // Try case variations on the index too
+    for variant in case_variations(name).into_iter().skip(1) {
+        let exact = client.symbol_cache().exact_search(&variant).await;
+        if !exact.is_empty() {
+            debug!(name, variant = %variant, "found via symbol index (case variation)");
+            return Ok(exact);
+        }
+    }
+
     // ── cached fuzzy index fallback ─────────────────────────────────────────
     // Search the accumulated symbol index using nucleo fuzzy matching.
     let fuzzy_results = client.symbol_cache().fuzzy_search(name, 10).await;
@@ -173,8 +246,8 @@ pub async fn find_symbol_with_fallback(
     }
 
     // ── directory-walk fallback ──────────────────────────────────────────────
-    // When all workspace_symbol strategies fail, walk upward from search_dir
-    // scanning document symbols in source files at each level.
+    // When all strategies above fail, walk upward from search_dir scanning
+    // document symbols. Results are also fed into the index for future lookups.
     if let Some(dir) = search_dir {
         if let Some(found) = try_directory_walk(client, name, dir).await? {
             return Ok(found);

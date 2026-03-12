@@ -33,7 +33,8 @@ impl LspManager {
                 let arc = Arc::new(client);
                 clients.insert(spec.language.clone(), arc.clone());
                 // Seed symbol cache in background so startup isn't blocked.
-                tokio::spawn(async move { arc.symbol_cache().seed(&arc).await });
+                let ws = workspace.to_path_buf();
+                tokio::spawn(async move { arc.symbol_cache().seed(&arc, &ws).await });
             }
         }
 
