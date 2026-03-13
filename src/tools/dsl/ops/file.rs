@@ -59,9 +59,7 @@ pub fn handle_search_symbols(
 
     let language = cd_file
         .and_then(|f| {
-            //let lang = crate::tools::formatting::detect_language_id(&f.display().to_string());
-            use crate::lsp::detect_lang::detect_language_id; // TODO maybe this function happens to have the same name but is wrong????
-            let lang = detect_language_id(&f.display().to_string());
+            let lang = crate::lsp::detect_lang::detect_language_id(&f.display().to_string());
             if lang.is_empty() {
                 None
             } else {
