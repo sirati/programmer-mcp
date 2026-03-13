@@ -22,50 +22,89 @@ pub async fn execute_search_symbols(
         };
     }
 
-    let mut all_results = Vec::new();
+    // Collect per-client results (exact first, then fuzzy, deduped).
+    let mut per_client: Vec<Vec<(lsp_types::SymbolInformation, String)>> = Vec::new();
 
     for client in &clients {
-        // Try exact search first
+        let mut results = Vec::new();
+        let lang = client.language().to_string();
+
         let exact = client.symbol_cache().exact_search(query).await;
         for sym in exact {
-            all_results.push((sym, client.language().to_string()));
+            results.push((sym, lang.clone()));
         }
 
-        // Then fuzzy search
         let fuzzy = client.symbol_cache().fuzzy_search(query, limit).await;
         for sym in fuzzy {
-            // Deduplicate: skip if already in exact results
-            let key = (
-                sym.name.clone(),
-                sym.location.uri.as_str().to_string(),
-                sym.location.range.start.line,
-            );
-            let already = all_results.iter().any(|(s, _)| {
-                s.name == key.0
-                    && s.location.uri.as_str() == key.1
-                    && s.location.range.start.line == key.2
+            let already = results.iter().any(|(s, _)| {
+                s.name == sym.name
+                    && s.location.uri == sym.location.uri
+                    && s.location.range.start.line == sym.location.range.start.line
             });
             if !already {
-                all_results.push((sym, client.language().to_string()));
+                results.push((sym, lang.clone()));
             }
+        }
+
+        if !results.is_empty() {
+            per_client.push(results);
         }
     }
 
-    if all_results.is_empty() {
+    if per_client.is_empty() {
+        let mut msg = format!("no symbols matching '{query}'");
+        let seeding: Vec<&str> = clients
+            .iter()
+            .filter(|c| c.symbol_cache().is_seeding())
+            .map(|c| c.language())
+            .collect();
+        if !seeding.is_empty() {
+            msg.push_str(&format!(
+                " (index incomplete — still seeding: {})",
+                seeding.join(", ")
+            ));
+        }
         return OperationResult {
             operation: "search".into(),
             success: true,
-            output: format!("no symbols matching '{query}'"),
+            output: msg,
         };
     }
 
-    // Truncate to limit
-    all_results.truncate(limit);
+    // Round-robin interleave so each language gets fair representation.
+    let mut all_results = Vec::with_capacity(limit);
+    let mut indices: Vec<usize> = vec![0; per_client.len()];
+    loop {
+        let mut added = false;
+        for (i, client_results) in per_client.iter().enumerate() {
+            if indices[i] < client_results.len() && all_results.len() < limit {
+                all_results.push(client_results[indices[i]].clone());
+                indices[i] += 1;
+                added = true;
+            }
+        }
+        if !added || all_results.len() >= limit {
+            break;
+        }
+    }
+
+    // Check if any client is still seeding.
+    let seeding_langs: Vec<String> = clients
+        .iter()
+        .filter(|c| c.symbol_cache().is_seeding())
+        .map(|c| c.language().to_string())
+        .collect();
 
     let mut output = format!(
         "symbols matching '{query}' ({} results):\n",
         all_results.len()
     );
+    if !seeding_langs.is_empty() {
+        output.push_str(&format!(
+            "  (index incomplete — still seeding: {})\n",
+            seeding_langs.join(", ")
+        ));
+    }
     for (sym, lang) in &all_results {
         let path = uri_to_path(&sym.location.uri).unwrap_or_default();
         // Make path relative

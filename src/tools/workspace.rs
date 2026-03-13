@@ -84,12 +84,12 @@ async fn collect_lsp_status(manager: &LspManager) -> String {
     for client in &clients {
         let lang = client.language();
         let (_, symbols) = client.symbol_cache().stats().await;
-        let ws = if client.has_workspace_symbol() {
-            "workspace/symbol"
+        let status = if client.symbol_cache().is_seeding() {
+            " (seeding...)"
         } else {
-            "documentSymbol"
+            ""
         };
-        let _ = write!(out, "\n  {lang}: {symbols} symbols indexed ({ws})");
+        let _ = write!(out, "\n  {lang}: {symbols} symbols indexed{status}");
     }
     out
 }

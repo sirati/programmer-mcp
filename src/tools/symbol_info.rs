@@ -6,6 +6,15 @@ use super::formatting::{find_containing_symbol_range, read_range_from_file, uri_
 use super::symbol_search::find_symbol_with_fallback;
 use crate::lsp::client::{LspClient, LspClientError};
 
+/// Format a "not found" message, appending seeding notice if applicable.
+pub fn not_found_msg(client: &LspClient, symbol_name: &str) -> String {
+    let mut msg = format!("{symbol_name} not found");
+    if client.symbol_cache().is_seeding() {
+        msg.push_str(" (index incomplete — still seeding)");
+    }
+    msg
+}
+
 /// Extract the doc comment above a symbol's definition.
 pub async fn get_docstring(
     client: &Arc<LspClient>,
@@ -14,7 +23,7 @@ pub async fn get_docstring(
 ) -> Result<String, LspClientError> {
     let symbols = find_symbol_with_fallback(client, symbol_name, search_dir).await?;
     if symbols.is_empty() {
-        return Ok(format!("{symbol_name} not found"));
+        return Ok(not_found_msg(client, symbol_name));
     }
 
     let mut results = Vec::new();
@@ -40,7 +49,7 @@ pub async fn get_body(
 ) -> Result<String, LspClientError> {
     let symbols = find_symbol_with_fallback(client, symbol_name, search_dir).await?;
     if symbols.is_empty() {
-        return Ok(format!("{symbol_name} not found"));
+        return Ok(not_found_msg(client, symbol_name));
     }
 
     let sym = &symbols[0];

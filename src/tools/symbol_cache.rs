@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -49,6 +50,8 @@ pub struct SymbolCache {
     index: RwLock<HashMap<(String, String, u32), IndexEntry>>,
     /// Name → list of index keys, for fast exact lookup.
     name_index: RwLock<HashMap<String, Vec<(String, String, u32)>>>,
+    /// True while initial seeding is in progress.
+    seeding: AtomicBool,
 }
 
 impl SymbolCache {
@@ -57,7 +60,13 @@ impl SymbolCache {
             query_cache: RwLock::new(HashMap::new()),
             index: RwLock::new(HashMap::new()),
             name_index: RwLock::new(HashMap::new()),
+            seeding: AtomicBool::new(false),
         }
+    }
+
+    /// Returns true if initial seeding is still in progress.
+    pub fn is_seeding(&self) -> bool {
+        self.seeding.load(Ordering::Relaxed)
     }
 
     /// Query workspace symbols, using cache when available.
@@ -178,12 +187,17 @@ impl SymbolCache {
     }
 
     /// Seed via workspace/symbol queries (for LSPs that support it).
+    ///
+    /// Strategy: try empty query first. If the LSP returns a large result
+    /// (500+), assume it supports full listing and stop. Otherwise, probe
+    /// with single-letter queries to gather more coverage.
     pub async fn seed_workspace_symbols(&self, client: &Arc<LspClient>) {
+        let queries: &[&str] = &[
+            "", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
+            "r", "s", "t", "u", "v", "w", "x",
+        ];
         let mut total = 0;
-        for query in [
-            "", "a", "b", "c", "d", "e", "f", "g", "h", "i", "m", "n", "o", "p", "r", "s", "t",
-            "u", "w",
-        ] {
+        for query in queries {
             match client.workspace_symbol(query).await {
                 Ok(symbols) if !symbols.is_empty() => {
                     total += symbols.len();
@@ -197,7 +211,9 @@ impl SymbolCache {
                     );
                     drop(cache);
                     self.add_symbols(&symbols).await;
-                    if query.is_empty() {
+                    // Only skip single-letter queries if empty query returned
+                    // a large result, indicating the LSP supports full listing.
+                    if query.is_empty() && symbols.len() >= 500 {
                         break;
                     }
                 }
@@ -243,25 +259,27 @@ impl SymbolCache {
         debug!(lsp = %lang, total, files = files.len(), "seeded symbol cache (documentSymbol)");
     }
 
-    /// Seed the cache — picks the right strategy based on LSP capabilities.
-    /// If workspace/symbol is advertised but returns nothing, falls back to
-    /// document symbol scanning.
+    /// Seed the cache using both strategies for maximum coverage.
+    ///
+    /// 1. workspace/symbol (fast, gives public symbols across the workspace)
+    /// 2. documentSymbol scan (complete — captures private/nested symbols)
+    ///
+    /// The file watcher keeps the index up-to-date after initial seeding.
     pub async fn seed(&self, client: &Arc<LspClient>, workspace: &Path) {
+        self.seeding.store(true, Ordering::Relaxed);
+
         // Wait for the LSP to finish initial indexing.
         tokio::time::sleep(Duration::from_secs(5)).await;
 
+        // Phase 1: workspace/symbol for quick broad coverage.
         if client.has_workspace_symbol() {
             self.seed_workspace_symbols(client).await;
-            // If workspace/symbol yielded nothing, the LSP may advertise the
-            // capability but not actually return results (e.g. basedpyright).
-            let (_, indexed) = self.stats().await;
-            if indexed == 0 {
-                debug!(lsp = %client.language(), "workspace/symbol returned nothing, falling back to document scan");
-                self.seed_from_documents(client, workspace).await;
-            }
-        } else {
-            self.seed_from_documents(client, workspace).await;
         }
+
+        // Phase 2: documentSymbol scan for complete coverage.
+        self.seed_from_documents(client, workspace).await;
+
+        self.seeding.store(false, Ordering::Relaxed);
     }
 
     /// Add symbols to the merged index (public for directory-walk indexing).

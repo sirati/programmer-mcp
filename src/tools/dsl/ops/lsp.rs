@@ -287,11 +287,32 @@ fn push_symbol_op(
     ops.push(op);
 }
 
-/// Detect the dominant programming language in a directory by sampling source files.
+/// Detect the dominant programming language in a directory.
+/// Checks project marker files first (go.mod, Cargo.toml, etc.),
+/// then falls back to sampling source file extensions.
 pub fn detect_dir_language(dir: &Path) -> Option<String> {
     if dir.as_os_str().is_empty() {
         return None;
     }
+
+    // Check project marker files first — these are definitive.
+    let markers: &[(&str, &str)] = &[
+        ("go.mod", "go"),
+        ("Cargo.toml", "rust"),
+        ("package.json", "typescript"),
+        ("pyproject.toml", "python"),
+        ("setup.py", "python"),
+        ("flake.nix", "nix"),
+        ("default.nix", "nix"),
+        ("Makefile", "make"),
+    ];
+    for (marker, lang) in markers {
+        if dir.join(marker).exists() {
+            return Some(lang.to_string());
+        }
+    }
+
+    // Fall back to sampling source files.
     let entries = std::fs::read_dir(dir).ok()?;
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 

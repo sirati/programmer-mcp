@@ -416,3 +416,20 @@ next make sure that lsp only get file change notifications for files of their la
 
 ⚠ command `body lsp.rs.{handle_symbol_cmd, push_symbol_op}` was used without brackets — correct usage: `body [lsp.rs.{handle_symbol_cmd, push_symbol_op}]
 
+
+
+{
+  "commands": "cd src/main.rs | definition [execute_one]"
+}
+
+Symbol: execute_one
+File: /home/sirati/devel/rust/programmer-mcp/src/tools/execute.rs
+Kind: Function
+Range: L61:C1 - L186:C2
+problem 1: file is not relative
+problem 2: definition and body are doing the same, lets think about what definition should do?
+
+
+
+
+todos: symbol index should also be saved to .cache, .cache files maybe can just contain last changed so we dont need to hash?  when starting .cache should be loaded and only changed files reindexed

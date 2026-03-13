@@ -6,6 +6,7 @@ use tracing::debug;
 use super::formatting::{
     add_line_numbers, find_containing_symbol_range, read_range_from_file, uri_to_path,
 };
+use super::symbol_info::not_found_msg;
 use super::symbol_search::find_symbol_with_fallback;
 use crate::lsp::client::{LspClient, LspClientError};
 
@@ -18,7 +19,7 @@ pub async fn read_definition(
     let symbols = find_symbol_with_fallback(client, symbol_name, search_dir).await?;
 
     if symbols.is_empty() {
-        return Ok(format!("{symbol_name} not found"));
+        return Ok(not_found_msg(client, symbol_name));
     }
 
     let mut output = String::new();
@@ -71,7 +72,7 @@ pub async fn read_definition(
     }
 
     if output.is_empty() {
-        return Ok(format!("{symbol_name} not found"));
+        return Ok(not_found_msg(client, symbol_name));
     }
 
     Ok(output)
