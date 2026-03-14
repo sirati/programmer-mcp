@@ -7,10 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use super::serde_helpers::*;
 
-fn default_search_limit() -> usize {
-    20
-}
-
 /// A single operation within a batch request.
 ///
 /// Symbol-based operations accept `symbolNames` (array of strings) to process multiple
@@ -96,6 +92,14 @@ pub enum Operation {
         column: u32,
         language: Option<String>,
     },
+    /// Get hover info for a symbol by name (resolves position automatically).
+    HoverSymbol {
+        #[serde(rename = "symbolNames", deserialize_with = "deserialize_string_or_vec")]
+        symbol_names: Vec<String>,
+        language: Option<String>,
+        #[serde(skip)]
+        search_dir: Option<String>,
+    },
     /// Rename a symbol at a position.
     RenameSymbol {
         #[serde(rename = "filePath")]
@@ -105,6 +109,16 @@ pub enum Operation {
         #[serde(rename = "newName")]
         new_name: String,
         language: Option<String>,
+    },
+    /// Rename a symbol by name (resolves position automatically).
+    RenameBySymbol {
+        #[serde(rename = "symbolName")]
+        symbol_name: String,
+        #[serde(rename = "newName")]
+        new_name: String,
+        language: Option<String>,
+        #[serde(skip)]
+        search_dir: Option<String>,
     },
     /// List symbols in a file as a tree.
     ListSymbols {

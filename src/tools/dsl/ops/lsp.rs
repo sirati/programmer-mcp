@@ -2,105 +2,85 @@
 
 use std::path::Path;
 
-use crate::lsp::detect_lang::detect_language_id;
+use crate::lsp::detect_lang::{detect_dir_language, detect_language_id};
 use crate::tools::Operation;
 use crate::tools::SOURCE_EXTS;
 
-use super::super::parse::parse_item_list;
-use super::{non_empty_items, resolve_file, resolve_list_item};
+use super::{non_empty_items, resolve_file};
 
-pub fn handle_list_symbols(
-    ops: &mut Vec<Operation>,
-    args: &str,
-    cd_dir: &Path,
-    cd_file: Option<&Path>,
-) {
-    if args.trim().is_empty() {
-        if let Some(f) = cd_file {
-            ops.push(Operation::ListSymbols {
-                file_path: f.display().to_string(),
-                max_depth: 3,
-                language: None,
-            });
-        } else {
-            // No file context — list directory contents
-            ops.push(Operation::ListDir {
-                dir_path: cd_dir.display().to_string(),
-                max_depth: 1,
-            });
-        }
-        return;
-    }
-    for item in parse_item_list(args) {
-        if let Some(path) = resolve_list_item(&item, cd_dir, cd_file) {
-            // Check if the resolved path is a directory
-            let abs = if Path::new(&path).is_absolute() {
-                std::path::PathBuf::from(&path)
-            } else if let Ok(cwd) = std::env::current_dir() {
-                cwd.join(&path)
+/// Resolve `language` and `search_dir` from DSL context (cd_dir / cd_file).
+fn resolve_lang_and_dir(cd_dir: &Path, cd_file: Option<&Path>) -> (Option<String>, Option<String>) {
+    let search_dir = if cd_dir.as_os_str().is_empty() {
+        cd_file.map(|_| ".".to_string())
+    } else {
+        Some(cd_dir.display().to_string())
+    };
+    let language = cd_file
+        .and_then(|f| {
+            let lang = detect_language_id(&f.display().to_string());
+            if lang.is_empty() {
+                None
             } else {
-                std::path::PathBuf::from(&path)
-            };
-            if abs.is_dir() {
-                ops.push(Operation::ListDir {
-                    dir_path: path,
-                    max_depth: 1,
-                });
-            } else {
-                ops.push(Operation::ListSymbols {
-                    file_path: path,
-                    max_depth: 3,
-                    language: None,
-                });
+                Some(lang.to_string())
             }
-        }
-    }
-}
-
-pub fn handle_diagnostics(
-    ops: &mut Vec<Operation>,
-    args: &str,
-    cd_dir: &Path,
-    cd_file: Option<&Path>,
-) {
-    for item in parse_item_list(args) {
-        if let Some(path) = resolve_list_item(&item, cd_dir, cd_file) {
-            ops.push(Operation::Diagnostics {
-                file_path: path,
-                context_lines: 5,
-                show_line_numbers: true,
-                language: None,
-            });
-        }
-    }
+        })
+        .or_else(|| detect_dir_language(cd_dir));
+    (language, search_dir)
 }
 
 /// `hover <file> <line> <col>` or `hover <line> <col>` (uses cd_file)
+/// Also supports `hover [symbol_name]` to auto-resolve position via symbol search.
 pub fn handle_hover(ops: &mut Vec<Operation>, args: &str, cd_dir: &Path, cd_file: Option<&Path>) {
     let parts: Vec<&str> = args.split_whitespace().collect();
-    let (file, line_str, col_str) = if parts.len() >= 3 {
-        (resolve_file(cd_dir, parts[0]), parts[1], parts[2])
-    } else if parts.len() == 2 {
-        let Some(f) = cd_file else { return };
-        (f.display().to_string(), parts[0], parts[1])
-    } else {
+
+    // Try positional form first: `hover file line col` or `hover line col`
+    if parts.len() >= 2 {
+        // Check if the last two args are numbers (line col)
+        let last_is_num = parts[parts.len() - 1].parse::<u32>().is_ok();
+        let second_last_is_num = parts[parts.len() - 2].parse::<u32>().is_ok();
+
+        if last_is_num && second_last_is_num {
+            let (file, line_str, col_str) = if parts.len() >= 3 {
+                (
+                    resolve_file(cd_dir, parts[0]),
+                    parts[parts.len() - 2],
+                    parts[parts.len() - 1],
+                )
+            } else {
+                let Some(f) = cd_file else { return };
+                (f.display().to_string(), parts[0], parts[1])
+            };
+            let Ok(line) = line_str.parse::<u32>() else {
+                return;
+            };
+            let Ok(column) = col_str.parse::<u32>() else {
+                return;
+            };
+            ops.push(Operation::Hover {
+                file_path: file,
+                line,
+                column,
+                language: None,
+            });
+            return;
+        }
+    }
+
+    // Symbol-name form: `hover [sym1 sym2]` or `hover sym_name`
+    let syms = non_empty_items(args);
+    if syms.is_empty() {
         return;
-    };
-    let Ok(line) = line_str.parse::<u32>() else {
-        return;
-    };
-    let Ok(column) = col_str.parse::<u32>() else {
-        return;
-    };
-    ops.push(Operation::Hover {
-        file_path: file,
-        line,
-        column,
-        language: None,
+    }
+    let (language, search_dir) = resolve_lang_and_dir(cd_dir, cd_file);
+    ops.push(Operation::HoverSymbol {
+        symbol_names: syms,
+        language,
+        search_dir,
     });
 }
 
 /// `rename_symbol <file> <line> <col> <new_name>` or `rename_symbol <line> <col> <new_name>`
+/// Also supports `rename_symbol <symbol_name> <new_name>` to auto-resolve position.
 pub fn handle_rename_symbol(
     ops: &mut Vec<Operation>,
     args: &str,
@@ -108,27 +88,44 @@ pub fn handle_rename_symbol(
     cd_file: Option<&Path>,
 ) {
     let parts: Vec<&str> = args.splitn(4, char::is_whitespace).collect();
-    let (file, line_str, col_str, new_name) = if parts.len() == 4 {
-        (resolve_file(cd_dir, parts[0]), parts[1], parts[2], parts[3])
-    } else if parts.len() == 3 {
-        let Some(f) = cd_file else { return };
-        (f.display().to_string(), parts[0], parts[1], parts[2])
-    } else {
+
+    // Try positional form: `rename_symbol file line col new_name` or `rename_symbol line col new_name`
+    if parts.len() >= 3 {
+        let maybe_line = parts[parts.len() - 3].parse::<u32>();
+        let maybe_col = parts[parts.len() - 2].parse::<u32>();
+        if let (Ok(line), Ok(column)) = (maybe_line, maybe_col) {
+            let new_name = parts[parts.len() - 1];
+            let file = if parts.len() == 4 {
+                resolve_file(cd_dir, parts[0])
+            } else if let Some(f) = cd_file {
+                f.display().to_string()
+            } else {
+                return;
+            };
+            ops.push(Operation::RenameSymbol {
+                file_path: file,
+                line,
+                column,
+                new_name: new_name.trim().to_string(),
+                language: None,
+            });
+            return;
+        }
+    }
+
+    // Symbol-name form: `rename_symbol <symbol_name> <new_name>`
+    if parts.len() == 2 {
+        let (language, search_dir) = resolve_lang_and_dir(cd_dir, cd_file);
+        ops.push(Operation::RenameBySymbol {
+            symbol_name: parts[0].to_string(),
+            new_name: parts[1].trim().to_string(),
+            language,
+            search_dir,
+        });
         return;
-    };
-    let Ok(line) = line_str.trim().parse::<u32>() else {
-        return;
-    };
-    let Ok(column) = col_str.trim().parse::<u32>() else {
-        return;
-    };
-    ops.push(Operation::RenameSymbol {
-        file_path: file,
-        line,
-        column,
-        new_name: new_name.trim().to_string(),
-        language: None,
-    });
+    }
+
+    // Not enough args
 }
 
 /// Dispatch a symbol-based command, auto-correcting path-first usage.
@@ -204,27 +201,7 @@ pub fn handle_symbol_cmd(
     if syms.is_empty() {
         return;
     }
-    let search_dir = if cd_dir.as_os_str().is_empty() {
-        // When cd_file is set at workspace root, use "." so directory walk still works.
-        if cd_file.is_some() {
-            Some(".".to_string())
-        } else {
-            None
-        }
-    } else {
-        Some(cd_dir.display().to_string())
-    };
-    // Scope search to the language of the current context.
-    let language = cd_file
-        .and_then(|f| {
-            let lang = detect_language_id(&f.display().to_string());
-            if lang.is_empty() {
-                None
-            } else {
-                Some(lang.to_string())
-            }
-        })
-        .or_else(|| detect_dir_language(cd_dir));
+    let (language, search_dir) = resolve_lang_and_dir(cd_dir, cd_file);
     push_symbol_op(ops, cmd, syms, language, search_dir);
 }
 
@@ -246,88 +223,24 @@ fn push_symbol_op(
     language: Option<String>,
     search_dir: Option<String>,
 ) {
+    macro_rules! sym_op {
+        ($variant:ident) => {
+            Operation::$variant {
+                symbol_names,
+                language,
+                search_dir,
+            }
+        };
+    }
     let op = match cmd {
-        "body" => Operation::Body {
-            symbol_names,
-            language,
-            search_dir,
-        },
-        "definition" => Operation::Definition {
-            symbol_names,
-            language,
-            search_dir,
-        },
-        "references" => Operation::References {
-            symbol_names,
-            language,
-            search_dir,
-        },
-        "docstring" => Operation::Docstring {
-            symbol_names,
-            language,
-            search_dir,
-        },
-        "impls" => Operation::Impls {
-            symbol_names,
-            language,
-            search_dir,
-        },
-        "callers" => Operation::Callers {
-            symbol_names,
-            language,
-            search_dir,
-        },
-        "callees" => Operation::Callees {
-            symbol_names,
-            language,
-            search_dir,
-        },
+        "body" => sym_op!(Body),
+        "definition" => sym_op!(Definition),
+        "references" => sym_op!(References),
+        "docstring" => sym_op!(Docstring),
+        "impls" => sym_op!(Impls),
+        "callers" => sym_op!(Callers),
+        "callees" => sym_op!(Callees),
         _ => return,
     };
     ops.push(op);
-}
-
-/// Detect the dominant programming language in a directory.
-/// Checks project marker files first (go.mod, Cargo.toml, etc.),
-/// then falls back to sampling source file extensions.
-pub fn detect_dir_language(dir: &Path) -> Option<String> {
-    if dir.as_os_str().is_empty() {
-        return None;
-    }
-
-    // Check project marker files first — these are definitive.
-    let markers: &[(&str, &str)] = &[
-        ("go.mod", "go"),
-        ("Cargo.toml", "rust"),
-        ("package.json", "typescript"),
-        ("pyproject.toml", "python"),
-        ("setup.py", "python"),
-        ("flake.nix", "nix"),
-        ("default.nix", "nix"),
-        ("Makefile", "make"),
-    ];
-    for (marker, lang) in markers {
-        if dir.join(marker).exists() {
-            return Some(lang.to_string());
-        }
-    }
-
-    // Fall back to sampling source files.
-    let entries = std::fs::read_dir(dir).ok()?;
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-
-    for entry in entries.take(50).flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            let lang = detect_language_id(&path.display().to_string());
-            if !lang.is_empty() {
-                *counts.entry(lang.to_string()).or_default() += 1;
-            }
-        }
-    }
-
-    counts
-        .into_iter()
-        .max_by_key(|(_, count)| *count)
-        .map(|(lang, _)| lang)
 }

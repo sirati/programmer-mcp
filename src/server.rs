@@ -29,7 +29,9 @@ pub struct ExecuteRequest {
     ///   list_symbols [f1 f2]      — symbol tree of files; on a directory: lists source files
     ///   diagnostics [f1 f2]       — errors/warnings for files
     ///   hover <file> <line> <col> — hover info at position (file optional if cd'd)
+    ///   hover [sym1 sym2]         — hover info by symbol name
     ///   rename_symbol <file> <line> <col> <new_name>
+    ///   rename_symbol <sym> <new> — rename by symbol name (auto-resolves position)
     ///   code_action <file> <line> <col> [end_line end_col] [kind1 kind2]
     ///
     /// Symbol-based operations:
@@ -68,8 +70,12 @@ pub struct ExecuteRequest {
     ///
     /// Read & Search:
     ///   read <file> [start end]            — read file contents (line range optional)
-    ///   grep <pattern>                     — search workspace files for text (scoped by cd)
-    ///   search <query> [limit=N]           — fuzzy symbol search across the index
+    ///   grep <pattern>                     — symbol+text search (scoped by cd)
+    ///   search <query> [limit=N]           — fuzzy symbol search across index
+    ///
+    /// Quoting: use "double" or 'single' quotes for args with spaces.
+    ///   grep "fn main"                    — search for multi-word pattern
+    ///   cd "path with spaces"             — navigate to quoted path
     ///
     /// Misc:
     ///   workspace_info                     — show subprojects and standalone files
@@ -134,15 +140,29 @@ impl ProgrammerServer {
           code_action src/main.rs 42 10    # code actions at position\n\
           code_action 42 10 50 15 refactor # range + kind filter\n\n\
         SYMBOL-BASED OPS:\n\
-          body        [relay_command show_help]\n\
-          definition  [MyStruct MyStruct.method]\n\
-          references  [my_fn]\n\
-          docstring   [MyTrait]\n\
-          impls       [MyType]\n\n\
+          body        [sym1 sym2]          # raw source code (no line numbers)\n\
+          definition  [sym1 sym2]          # location + signature + docstring\n\
+          references  [sym1 sym2]          # all usages across workspace\n\
+          docstring   [sym1 sym2]          # doc comments only\n\
+          impls       [MyType]             # impl blocks (Rust)\n\
+          callers     [my_fn]              # incoming call hierarchy\n\
+          callees     [my_fn]              # outgoing call hierarchy\n\
+          # Parent.child: MyStruct.method, Module.function\n\n\
+        READ & SEARCH:\n\
+          read <file> [start end]          # read file (line range optional)\n\
+          grep <pattern>                   # text+symbol search (scoped by cd)\n\
+          grep \"pattern with spaces\"       # use quotes for multi-word patterns\n\
+          search <query> [limit=N]         # fuzzy symbol search across index\n\n\
+        CD SCOPING:\n\
+          # cd scopes grep, list_symbols, and language detection\n\
+          cd src/tools                     # scope to directory\n\
+          cd src/tools/edit.rs             # scope to file\n\
+          # After cd, file ops use that context automatically\n\n\
         LIST SYNTAX: [a, b, tools/{mod.rs x.rs}]\n\
           • separators: space, comma, or both\n\
           • brace expansion: tools/{mod.rs x.rs} → tools/mod.rs tools/x.rs\n\
-          • find_{a b} → find_a find_b\n\n\
+          • find_{a b} → find_a find_b\n\
+          • quotes: [\"name with spaces\" simple]\n\n\
         TASKS:\n\
           set_task task-name Description text\n\
           update_task task-name New description\n\
@@ -273,22 +293,30 @@ fn format_results(results: &[OperationResult]) -> String {
     }
 
     let mut sections = Vec::new();
-    let mut empty_count = 0;
+    let mut empty_ops = Vec::new();
     let mut error_count = 0;
 
     for r in results {
         if !r.success {
             error_count += 1;
             sections.push(format!("{} failed: {}", r.operation, r.output));
-        } else if r.output.is_empty() || r.output.ends_with("not found") {
-            empty_count += 1;
+        } else if r.output.is_empty()
+            || r.output.ends_with("not found")
+            || r.output.ends_with("not found)")
+        {
+            empty_ops.push(r.output.as_str());
         } else {
             sections.push(r.output.clone());
         }
     }
 
-    if empty_count > 0 && !sections.is_empty() {
-        sections.push("Some requests found nothing".to_string());
+    // Only show "not found" details when there are also real results
+    if !empty_ops.is_empty() && !sections.is_empty() {
+        if empty_ops.len() == 1 {
+            sections.push(empty_ops[0].to_string());
+        } else {
+            sections.push("Some requests found nothing".to_string());
+        }
     }
 
     if sections.is_empty() {

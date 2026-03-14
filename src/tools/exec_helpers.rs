@@ -69,22 +69,39 @@ where
 
     let results = futures::future::join_all(futures).await;
 
-    let mut parts = Vec::new();
-    let mut any_success = false;
+    let mut found_parts = Vec::new();
+    let mut not_found_parts = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
     for result in results {
         match result {
             Ok(text) if !text.is_empty() => {
-                any_success = true;
-                parts.push(text);
+                // Classify: "not found" vs real results
+                let trimmed = text.trim().to_string();
+                if is_not_found_msg(&trimmed) {
+                    not_found_parts.push(trimmed);
+                } else if seen.insert(trimmed.clone()) {
+                    found_parts.push(trimmed);
+                }
             }
             Ok(_) => {}
             Err(e) => tracing::debug!(op = op_name, "client error: {e}"),
         }
     }
 
+    // Only include "not found" messages if no real results were found
+    let parts = if found_parts.is_empty() {
+        // Deduplicate not-found messages too
+        not_found_parts.sort();
+        not_found_parts.dedup();
+        not_found_parts
+    } else {
+        found_parts
+    };
+
     OperationResult {
         operation: op_name.into(),
-        success: any_success,
+        success: !parts.is_empty() && parts.iter().any(|p| !p.contains("not found")),
         output: if parts.is_empty() {
             format!("no results for {op_name}")
         } else {
@@ -94,6 +111,22 @@ where
 }
 
 // ── shared error ──────────────────────────────────────────────────────────────
+
+/// Check if a result string is a "not found" / "no results" type message
+/// (as opposed to a real result that happens to mention "not found").
+fn is_not_found_msg(text: &str) -> bool {
+    fn is_not_found_line(l: &str) -> bool {
+        l.contains("not found")
+            || l.starts_with("No ")
+            || l.starts_with("Did you mean")
+            || l.trim().is_empty()
+    }
+    if !text.contains('\n') {
+        return text.contains("not found") || text.starts_with("No ");
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    lines.len() <= 4 && lines.iter().all(|l| is_not_found_line(l))
+}
 
 fn no_client(op_name: &str) -> OperationResult {
     OperationResult {

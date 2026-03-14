@@ -1,10 +1,11 @@
-//! File-based DSL operation builders (read, grep, search).
+//! File-based DSL operation builders (read, grep, search, list_symbols, diagnostics).
 
 use std::path::Path;
 
+use crate::tools::dsl::parse::{parse_item_list, unquote};
 use crate::tools::Operation;
 
-use super::{detect_dir_language, resolve_file};
+use super::{detect_dir_language, resolve_file, resolve_list_item};
 
 /// `read <file> [start end]` or `read` (uses cd_file)
 pub fn handle_read(ops: &mut Vec<Operation>, args: &str, cd_dir: &Path, cd_file: Option<&Path>) {
@@ -52,7 +53,7 @@ pub fn handle_search_symbols(
         }
     }
 
-    let query = query_parts.join(" ");
+    let query = unquote(&query_parts.join(" "));
     if query.is_empty() {
         return;
     }
@@ -85,8 +86,74 @@ pub fn handle_grep(ops: &mut Vec<Operation>, args: &str, cd_dir: &Path) {
             Some(cd_dir.display().to_string())
         };
         ops.push(Operation::Grep {
-            pattern: trimmed.to_string(),
+            pattern: unquote(trimmed),
             search_dir,
         });
+    }
+}
+
+/// `list_symbols [f1 f2]` — symbol tree (on dirs: list source files)
+pub fn handle_list_symbols(
+    ops: &mut Vec<Operation>,
+    args: &str,
+    cd_dir: &Path,
+    cd_file: Option<&Path>,
+) {
+    if args.trim().is_empty() {
+        if let Some(f) = cd_file {
+            ops.push(Operation::ListSymbols {
+                file_path: f.display().to_string(),
+                max_depth: 3,
+                language: None,
+            });
+        } else {
+            ops.push(Operation::ListDir {
+                dir_path: cd_dir.display().to_string(),
+                max_depth: 1,
+            });
+        }
+        return;
+    }
+    for item in parse_item_list(args) {
+        if let Some(path) = resolve_list_item(&item, cd_dir, cd_file) {
+            let abs = if Path::new(&path).is_absolute() {
+                std::path::PathBuf::from(&path)
+            } else if let Ok(cwd) = std::env::current_dir() {
+                cwd.join(&path)
+            } else {
+                std::path::PathBuf::from(&path)
+            };
+            if abs.is_dir() {
+                ops.push(Operation::ListDir {
+                    dir_path: path,
+                    max_depth: 1,
+                });
+            } else {
+                ops.push(Operation::ListSymbols {
+                    file_path: path,
+                    max_depth: 3,
+                    language: None,
+                });
+            }
+        }
+    }
+}
+
+/// `diagnostics [f1 f2]` — errors/warnings for files
+pub fn handle_diagnostics(
+    ops: &mut Vec<Operation>,
+    args: &str,
+    cd_dir: &Path,
+    cd_file: Option<&Path>,
+) {
+    for item in parse_item_list(args) {
+        if let Some(path) = resolve_list_item(&item, cd_dir, cd_file) {
+            ops.push(Operation::Diagnostics {
+                file_path: path,
+                context_lines: 5,
+                show_line_numbers: true,
+                language: None,
+            });
+        }
     }
 }

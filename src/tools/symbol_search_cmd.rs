@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 use crate::lsp::manager::LspManager;
-use crate::tools::formatting::uri_to_path;
+use crate::tools::formatting::{relative_to, uri_to_path};
 use crate::tools::operation::OperationResult;
 
 /// Execute a fuzzy symbol search across all (or language-filtered) LSP clients.
@@ -107,15 +107,13 @@ pub async fn execute_search_symbols(
     }
     for (sym, lang) in &all_results {
         let path = uri_to_path(&sym.location.uri).unwrap_or_default();
-        // Make path relative
-        let rel = if let Ok(cwd) = std::env::current_dir() {
-            let cwd_str = cwd.display().to_string();
-            path.strip_prefix(&format!("{cwd_str}/"))
-                .unwrap_or(&path)
-                .to_string()
-        } else {
-            path
-        };
+        // Use the client's workspace root to relativize
+        let ws_root = clients
+            .iter()
+            .find(|c| c.language() == lang)
+            .map(|c| c.workspace_root())
+            .unwrap_or_else(|| std::path::Path::new(""));
+        let rel = relative_to(&path, ws_root);
         let line = sym.location.range.start.line + 1;
         let kind = format!("{:?}", sym.kind);
         let container = sym

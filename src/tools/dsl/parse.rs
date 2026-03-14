@@ -3,11 +3,28 @@
 //! Handles comment stripping, word splitting, brace expansion, and item-list parsing.
 
 /// Strip a trailing `#`-style comment from a line.
+/// Respects braces, brackets, and quotes.
 pub fn strip_comment(line: &str) -> &str {
-    // Only strip if '#' is not inside braces or brackets
     let mut depth = 0usize;
+    let mut in_quote: Option<char> = None;
+    let mut escape = false;
     for (i, c) in line.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if c == '\\' {
+            escape = true;
+            continue;
+        }
+        if let Some(q) = in_quote {
+            if c == q {
+                in_quote = None;
+            }
+            continue;
+        }
         match c {
+            '"' | '\'' => in_quote = Some(c),
             '[' | '{' => depth += 1,
             ']' | '}' => depth = depth.saturating_sub(1),
             '#' if depth == 0 => return &line[..i],
@@ -24,6 +41,139 @@ pub fn split_first_word(s: &str) -> (&str, &str) {
         Some(i) => (&s[..i], s[i..].trim_start()),
         None => (s, ""),
     }
+}
+
+/// Remove surrounding quotes from a string and unescape `\"`, `\'`, `\\`.
+/// If the string is not quoted, returns it unchanged.
+pub fn unquote(s: &str) -> String {
+    let s = s.trim();
+    let (quote, inner) =
+        if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+            (s.chars().next(), &s[1..s.len() - 1])
+        } else {
+            return s.to_string();
+        };
+
+    let q = quote.unwrap();
+    let mut result = String::with_capacity(inner.len());
+    let mut escape = false;
+    for c in inner.chars() {
+        if escape {
+            // Only unescape the quote char and backslash itself
+            if c == q || c == '\\' {
+                result.push(c);
+            } else {
+                result.push('\\');
+                result.push(c);
+            }
+            escape = false;
+        } else if c == '\\' {
+            escape = true;
+        } else {
+            result.push(c);
+        }
+    }
+    if escape {
+        result.push('\\');
+    }
+    result
+}
+
+/// Split a string into words, respecting quotes and braces.
+/// Quoted strings are kept as a single token (with quotes retained for later unquoting).
+pub fn split_words(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut in_quote: Option<char> = None;
+    let mut depth = 0usize;
+    let mut escape = false;
+
+    for c in s.chars() {
+        if escape {
+            current.push(c);
+            escape = false;
+            continue;
+        }
+        if c == '\\' && in_quote.is_some() {
+            current.push(c);
+            escape = true;
+            continue;
+        }
+        if let Some(q) = in_quote {
+            current.push(c);
+            if c == q {
+                in_quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => {
+                current.push(c);
+                in_quote = Some(c);
+            }
+            '{' => {
+                depth += 1;
+                current.push(c);
+            }
+            '}' => {
+                depth = depth.saturating_sub(1);
+                current.push(c);
+            }
+            ' ' | '\t' | ',' if depth == 0 => {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    words.push(trimmed);
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        words.push(trimmed);
+    }
+    words
+}
+
+/// Split a line by `|` pipe separator, respecting quotes.
+pub fn split_pipe(line: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut in_quote: Option<char> = None;
+    let mut escape = false;
+
+    for c in line.chars() {
+        if escape {
+            current.push(c);
+            escape = false;
+            continue;
+        }
+        if c == '\\' && in_quote.is_some() {
+            current.push(c);
+            escape = true;
+            continue;
+        }
+        if let Some(q) = in_quote {
+            current.push(c);
+            if c == q {
+                in_quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => {
+                current.push(c);
+                in_quote = Some(c);
+            }
+            '|' => {
+                segments.push(std::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    segments.push(current);
+    segments
 }
 
 /// Find the position of the closing `}` that matches the opening `{` at position 0 of `s`.
@@ -86,42 +236,15 @@ pub fn expand_braces(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Split `s` by whitespace/commas while respecting `{...}` nesting depth.
+/// Split `s` by whitespace/commas while respecting `{...}` and quote nesting.
 fn split_respecting_braces(s: &str) -> Vec<String> {
-    let mut items: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut depth = 0usize;
-
-    for c in s.chars() {
-        match c {
-            '{' => {
-                depth += 1;
-                current.push(c);
-            }
-            '}' => {
-                depth = depth.saturating_sub(1);
-                current.push(c);
-            }
-            ',' | ' ' | '\t' if depth == 0 => {
-                let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() {
-                    items.push(trimmed);
-                }
-                current.clear();
-            }
-            _ => current.push(c),
-        }
-    }
-    let trimmed = current.trim().to_string();
-    if !trimmed.is_empty() {
-        items.push(trimmed);
-    }
-    items
+    split_words(s)
 }
 
 /// Parse a DSL item list: `[a, b, tools/{mod.rs x.rs}]` or bare `a b c`.
 ///
 /// Returns the fully expanded list of strings, deduplicated while preserving order.
+/// Quoted items are unquoted after expansion.
 pub fn parse_item_list(s: &str) -> Vec<String> {
     let s = s.trim();
     let inner = if s.starts_with('[') && s.ends_with(']') {
@@ -134,49 +257,10 @@ pub fn parse_item_list(s: &str) -> Vec<String> {
         .into_iter()
         .flat_map(|item| expand_braces(&item))
         .filter(|s| !s.is_empty())
+        .map(|s| unquote(&s))
         .collect()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_strip_comment() {
-        assert_eq!(strip_comment("cd src  # navigate"), "cd src  ");
-        assert_eq!(
-            strip_comment("body [foo{a,b}] # comment"),
-            "body [foo{a,b}] "
-        );
-        assert_eq!(strip_comment("no comment"), "no comment");
-    }
-
-    #[test]
-    fn test_expand_braces_simple() {
-        let mut r = expand_braces("tools/{mod.rs x.rs}");
-        r.sort();
-        assert_eq!(r, vec!["tools/mod.rs", "tools/x.rs"]);
-    }
-
-    #[test]
-    fn test_expand_braces_empty() {
-        assert_eq!(expand_braces(".{}"), vec!["."]);
-    }
-
-    #[test]
-    fn test_expand_braces_no_brace() {
-        assert_eq!(expand_braces("main.rs"), vec!["main.rs"]);
-    }
-
-    #[test]
-    fn test_parse_item_list() {
-        let items = parse_item_list("[main, tools/{mod.rs x.rs}]");
-        assert_eq!(items, vec!["main", "tools/mod.rs", "tools/x.rs"]);
-    }
-
-    #[test]
-    fn test_parse_item_list_bare() {
-        let items = parse_item_list("a b c");
-        assert_eq!(items, vec!["a", "b", "c"]);
-    }
-}
+#[path = "parse_tests.rs"]
+mod tests;

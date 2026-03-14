@@ -20,38 +20,38 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use tokio::sync::RwLock;
 use tracing::{debug, trace};
 
-use super::doc_index::{collect_language_files, flatten_doc_symbols};
-use super::formatting::path_to_uri;
+use super::doc_index::flatten_doc_symbols;
+
 use crate::lsp::client::{LspClient, LspClientError};
 
 /// How long cached workspace_symbol results stay valid.
 const CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// A cached workspace_symbol query result.
-struct CachedQuery {
-    symbols: Vec<SymbolInformation>,
-    fetched_at: Instant,
+pub(super) struct CachedQuery {
+    pub symbols: Vec<SymbolInformation>,
+    pub fetched_at: Instant,
 }
 
 /// Entry in the merged symbol index for fuzzy matching.
 #[derive(Clone)]
-struct IndexEntry {
+pub(super) struct IndexEntry {
     /// The symbol name (used for fuzzy matching).
-    name: String,
+    pub name: String,
     /// The full SymbolInformation from the LSP.
-    symbol: SymbolInformation,
+    pub symbol: SymbolInformation,
 }
 
 /// Per-client symbol cache.
 pub struct SymbolCache {
     /// Query string → cached results.
-    query_cache: RwLock<HashMap<String, CachedQuery>>,
+    pub(super) query_cache: RwLock<HashMap<String, CachedQuery>>,
     /// Merged index of all symbols seen, keyed by (name, uri, line) for dedup.
-    index: RwLock<HashMap<(String, String, u32), IndexEntry>>,
+    pub(super) index: RwLock<HashMap<(String, String, u32), IndexEntry>>,
     /// Name → list of index keys, for fast exact lookup.
-    name_index: RwLock<HashMap<String, Vec<(String, String, u32)>>>,
+    pub(super) name_index: RwLock<HashMap<String, Vec<(String, String, u32)>>>,
     /// True while initial seeding is in progress.
-    seeding: AtomicBool,
+    pub(super) seeding: AtomicBool,
 }
 
 impl SymbolCache {
@@ -186,100 +186,10 @@ impl SymbolCache {
         trace!(file_uri, "symbol cache invalidated for file");
     }
 
-    /// Seed via workspace/symbol queries (for LSPs that support it).
-    ///
-    /// Strategy: try empty query first. If the LSP returns a large result
-    /// (500+), assume it supports full listing and stop. Otherwise, probe
-    /// with single-letter queries to gather more coverage.
-    pub async fn seed_workspace_symbols(&self, client: &Arc<LspClient>) {
-        let queries: &[&str] = &[
-            "", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
-            "r", "s", "t", "u", "v", "w", "x",
-        ];
-        let mut total = 0;
-        for query in queries {
-            match client.workspace_symbol(query).await {
-                Ok(symbols) if !symbols.is_empty() => {
-                    total += symbols.len();
-                    let mut cache = self.query_cache.write().await;
-                    cache.insert(
-                        query.to_string(),
-                        CachedQuery {
-                            symbols: symbols.clone(),
-                            fetched_at: Instant::now(),
-                        },
-                    );
-                    drop(cache);
-                    self.add_symbols(&symbols).await;
-                    // Only skip single-letter queries if empty query returned
-                    // a large result, indicating the LSP supports full listing.
-                    if query.is_empty() && symbols.len() >= 500 {
-                        break;
-                    }
-                }
-                Ok(_) => {}
-                Err(_) => break,
-            }
-        }
-        debug!(lsp = %client.language(), total, "seeded symbol cache (workspace/symbol)");
-    }
-
-    /// Seed by walking source files and indexing their document symbols.
-    /// Used for LSPs that don't support workspace/symbol (e.g. basedpyright).
-    pub async fn seed_from_documents(&self, client: &Arc<LspClient>, workspace: &Path) {
-        let lang = client.language();
-        let files = collect_language_files(workspace, lang);
-        debug!(lsp = %lang, file_count = files.len(), "scanning files for document symbols");
-
-        let mut total = 0;
-        for path in &files {
-            let path_str = path.display().to_string();
-            let uri = match path_to_uri(&path_str) {
-                Ok(u) => u,
-                Err(_) => continue,
-            };
-
-            if let Err(e) = client.open_file(&path_str).await {
-                trace!(file = %path_str, "failed to open for indexing: {e}");
-                continue;
-            }
-
-            let doc_symbols = match client.document_symbol(&uri).await {
-                Ok(s) => s,
-                Err(e) => {
-                    trace!(file = %path_str, "documentSymbol failed: {e}");
-                    continue;
-                }
-            };
-
-            let flat = flatten_doc_symbols(&doc_symbols, &uri);
-            total += flat.len();
-            self.add_symbols(&flat).await;
-        }
-        debug!(lsp = %lang, total, files = files.len(), "seeded symbol cache (documentSymbol)");
-    }
-
-    /// Seed the cache using both strategies for maximum coverage.
-    ///
-    /// 1. workspace/symbol (fast, gives public symbols across the workspace)
-    /// 2. documentSymbol scan (complete — captures private/nested symbols)
-    ///
-    /// The file watcher keeps the index up-to-date after initial seeding.
+    /// Seed the cache using all strategies (disk cache, workspace/symbol,
+    /// documentSymbol scan). See `symbol_cache_seed` module for implementation.
     pub async fn seed(&self, client: &Arc<LspClient>, workspace: &Path) {
-        self.seeding.store(true, Ordering::Relaxed);
-
-        // Wait for the LSP to finish initial indexing.
-        tokio::time::sleep(Duration::from_secs(5)).await;
-
-        // Phase 1: workspace/symbol for quick broad coverage.
-        if client.has_workspace_symbol() {
-            self.seed_workspace_symbols(client).await;
-        }
-
-        // Phase 2: documentSymbol scan for complete coverage.
-        self.seed_from_documents(client, workspace).await;
-
-        self.seeding.store(false, Ordering::Relaxed);
+        super::symbol_cache_seed::seed(self, client, workspace).await;
     }
 
     /// Add symbols to the merged index (public for directory-walk indexing).

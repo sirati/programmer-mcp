@@ -31,18 +31,24 @@ pub fn uri_to_path(uri: &Uri) -> Option<String> {
     s.strip_prefix("file://").map(|p| p.to_string())
 }
 
-/// Add line numbers to text starting from `start_line` (1-indexed).
-pub fn add_line_numbers(text: &str, start_line: u32) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let last_num = start_line as usize + lines.len();
-    let padding = last_num.to_string().len();
+/// Check if a path is external (stdlib, package registry, nix store, etc.)
+pub fn is_external_path(path: &str) -> bool {
+    path.contains("/.cargo/registry/")
+        || path.contains("/rustlib/src/")
+        || path.contains("/nix/store/")
+        || path.contains("/go/pkg/mod/")
+        || path.contains("/node_modules/")
+        || path.contains("/site-packages/")
+        || path.starts_with("/usr/")
+}
 
-    let mut result = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        let num = start_line as usize + i;
-        let _ = writeln!(result, "{num:>padding$}|{line}");
-    }
-    result
+/// Make an absolute path relative to a workspace root.
+/// Returns the relative path, or the original path if it's not under root.
+pub fn relative_to(path: &str, workspace_root: &Path) -> String {
+    Path::new(path)
+        .strip_prefix(workspace_root)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string())
 }
 
 /// Find the full range of the symbol containing `position` via documentSymbol.
@@ -163,4 +169,35 @@ pub fn read_range_from_file(uri: &Uri, range: &Range) -> Result<String, std::io:
     }
 
     Ok(lines[start..=end].join("\n"))
+}
+
+/// Find the actual identifier position in a file for a symbol.
+///
+/// `workspace/symbol` range start often points at a doc comment or attribute line,
+/// not the identifier. We scan forward from the range start to find the line
+/// containing the symbol name and return the position of the name on that line.
+pub fn find_identifier_position(path: &str, symbol_name: &str, range_start: Position) -> Position {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return range_start;
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let start = range_start.line as usize;
+
+    // The bare name: for "MyStruct.method" use "method"
+    let bare = symbol_name
+        .rsplit_once('.')
+        .map(|(_, n)| n)
+        .unwrap_or(symbol_name);
+
+    // Scan up to 30 lines forward from range start to find the identifier
+    for i in start..lines.len().min(start + 30) {
+        if let Some(col) = lines[i].find(bare) {
+            return Position {
+                line: i as u32,
+                character: col as u32,
+            };
+        }
+    }
+
+    range_start
 }

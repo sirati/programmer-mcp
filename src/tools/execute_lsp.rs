@@ -10,123 +10,66 @@ use super::{
     symbol_info, symbol_list,
 };
 
+/// Helper macro to reduce boilerplate for symbol-based multi-symbol dispatch.
+macro_rules! dispatch_multi_symbol {
+    ($manager:expr, $op_name:expr, $sym_names:expr, $lang:expr, $sd:expr,
+     |$c:ident, $n:ident, $s:ident| $body:expr) => {{
+        let clients = $manager.resolve($lang.as_deref(), None);
+        execute_multi_symbol(
+            $op_name,
+            clients,
+            &$sym_names,
+            $sd.as_deref(),
+            |$c, $n, $s| async move { $body },
+        )
+        .await
+    }};
+}
+
 /// Dispatch a symbol-based LSP operation.
+#[rustfmt::skip]
 pub async fn execute_symbol_op(manager: &LspManager, op: Operation) -> OperationResult {
     match op {
-        Operation::Definition {
-            symbol_names,
-            language,
-            search_dir,
-        } => {
-            let clients = manager.resolve(language.as_deref(), None);
-            let sd = search_dir.clone();
-            execute_multi_symbol(
-                "definition",
-                clients,
-                &symbol_names,
-                sd.as_deref(),
-                |client, name, sd| async move {
-                    definition::read_definition(&client, &name, sd.as_deref()).await
-                },
-            )
-            .await
+        Operation::Definition { symbol_names, language, search_dir } => {
+            dispatch_multi_symbol!(manager, "definition", symbol_names, language, search_dir,
+                |client, name, sd| definition::read_definition(&client, &name, sd.as_deref()).await)
         }
-        Operation::References {
-            symbol_names,
-            language,
-            search_dir,
-        } => {
-            let clients = manager.resolve(language.as_deref(), None);
-            execute_multi_symbol(
-                "references",
-                clients,
-                &symbol_names,
-                search_dir.as_deref(),
-                |client, name, sd| async move {
-                    references::find_references(&client, &name, 5, sd.as_deref()).await
-                },
-            )
-            .await
+        Operation::References { symbol_names, language, search_dir } => {
+            dispatch_multi_symbol!(manager, "references", symbol_names, language, search_dir,
+                |client, name, sd| references::find_references(&client, &name, 5, sd.as_deref()).await)
         }
-        Operation::Docstring {
-            symbol_names,
-            language,
-            search_dir,
-        } => {
-            let clients = manager.resolve(language.as_deref(), None);
-            execute_multi_symbol(
-                "docstring",
-                clients,
-                &symbol_names,
-                search_dir.as_deref(),
-                |client, name, sd| async move {
-                    symbol_info::get_docstring(&client, &name, sd.as_deref()).await
-                },
-            )
-            .await
+        Operation::Docstring { symbol_names, language, search_dir } => {
+            dispatch_multi_symbol!(manager, "docstring", symbol_names, language, search_dir,
+                |client, name, sd| symbol_info::get_docstring(&client, &name, sd.as_deref()).await)
         }
-        Operation::Body {
-            symbol_names,
-            language,
-            search_dir,
-        } => {
-            let clients = manager.resolve(language.as_deref(), None);
-            execute_multi_symbol(
-                "body",
-                clients,
-                &symbol_names,
-                search_dir.as_deref(),
-                |client, name, sd| async move {
-                    symbol_info::get_body(&client, &name, sd.as_deref()).await
-                },
-            )
-            .await
+        Operation::Body { symbol_names, language, search_dir } => {
+            dispatch_multi_symbol!(manager, "body", symbol_names, language, search_dir,
+                |client, name, sd| symbol_info::get_body(&client, &name, sd.as_deref()).await)
         }
-        Operation::Callers {
-            symbol_names,
-            language,
-            search_dir,
-        } => {
-            let clients = manager.resolve(language.as_deref(), None);
-            execute_multi_symbol(
-                "callers",
-                clients,
-                &symbol_names,
-                search_dir.as_deref(),
-                |client, name, sd| async move { call_hierarchy::callers(client, name, sd).await },
-            )
-            .await
+        Operation::Callers { symbol_names, language, search_dir } => {
+            dispatch_multi_symbol!(manager, "callers", symbol_names, language, search_dir,
+                |client, name, sd| call_hierarchy::callers(client, name, sd).await)
         }
-        Operation::Callees {
-            symbol_names,
-            language,
-            search_dir,
-        } => {
-            let clients = manager.resolve(language.as_deref(), None);
-            execute_multi_symbol(
-                "callees",
-                clients,
-                &symbol_names,
-                search_dir.as_deref(),
-                |client, name, sd| async move { call_hierarchy::callees(client, name, sd).await },
-            )
-            .await
+        Operation::Callees { symbol_names, language, search_dir } => {
+            dispatch_multi_symbol!(manager, "callees", symbol_names, language, search_dir,
+                |client, name, sd| call_hierarchy::callees(client, name, sd).await)
         }
-        Operation::Impls {
-            symbol_names,
-            language,
-            search_dir,
-        } => {
+        Operation::Impls { symbol_names, language, search_dir } => {
+            dispatch_multi_symbol!(manager, "impls", symbol_names, language, search_dir,
+                |client, name, sd| impls::find_impls(&client, &name, sd.as_deref()).await)
+        }
+        Operation::HoverSymbol { symbol_names, language, search_dir } => {
+            dispatch_multi_symbol!(manager, "hover", symbol_names, language, search_dir,
+                |client, name, sd| hover::hover_symbol(&client, &name, sd.as_deref()).await)
+        }
+        Operation::RenameBySymbol { symbol_name, new_name, language, search_dir } => {
             let clients = manager.resolve(language.as_deref(), None);
-            execute_multi_symbol(
-                "impls",
-                clients,
-                &symbol_names,
-                search_dir.as_deref(),
-                |client, name, sd| async move {
-                    impls::find_impls(&client, &name, sd.as_deref()).await
-                },
-            )
+            execute_on_first("rename_symbol", clients, |client| {
+                let sn = symbol_name.clone();
+                let nn = new_name.clone();
+                let sd = search_dir.clone();
+                async move { rename::rename_by_symbol(&client, &sn, &nn, sd.as_deref()).await }
+            })
             .await
         }
         _ => unreachable!("execute_symbol_op called with non-symbol operation"),

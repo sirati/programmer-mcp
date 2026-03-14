@@ -17,8 +17,7 @@ pub use super::edit_pending::{apply_pending_edit, disambiguate, find_symbol_exac
 
 // Re-export types so existing `use crate::tools::edit::*` still works.
 pub use super::edit_types::{
-    new_pending_edits, new_undo_store, BoundedStore, EditType, PendingEdit, PendingEdits,
-    UndoEntry, UndoStore,
+    new_pending_edits, new_undo_store, EditType, PendingEdit, PendingEdits, UndoEntry, UndoStore,
 };
 
 /// Execute an undo: check if the new content still exists in the file, restore old content.

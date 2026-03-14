@@ -76,7 +76,9 @@ async fn execute_one(
         | Operation::Body { .. }
         | Operation::Callers { .. }
         | Operation::Callees { .. }
-        | Operation::Impls { .. } => execute_lsp::execute_symbol_op(manager, op).await,
+        | Operation::Impls { .. }
+        | Operation::HoverSymbol { .. }
+        | Operation::RenameBySymbol { .. } => execute_lsp::execute_symbol_op(manager, op).await,
 
         // LSP: file-based
         Operation::Diagnostics { .. }
@@ -118,7 +120,8 @@ async fn execute_one(
             pattern,
             search_dir,
         } => {
-            let output = grep::grep_workspace(pattern, search_dir.as_deref(), workspace_root);
+            let output =
+                grep::grep_workspace(pattern, search_dir.as_deref(), workspace_root, manager).await;
             OperationResult {
                 operation: "grep".into(),
                 success: true,

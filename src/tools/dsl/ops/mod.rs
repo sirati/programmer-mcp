@@ -12,12 +12,12 @@ pub mod process;
 pub mod refactor;
 pub mod task;
 
+pub use crate::lsp::detect_lang::detect_dir_language;
 pub use edit::{handle_apply_edit, handle_edit, handle_edit_range};
-pub use file::{handle_grep, handle_read, handle_search_symbols};
-pub use lsp::{
-    detect_dir_language, handle_diagnostics, handle_hover, handle_list_symbols,
-    handle_rename_symbol, handle_symbol_cmd,
+pub use file::{
+    handle_diagnostics, handle_grep, handle_list_symbols, handle_read, handle_search_symbols,
 };
+pub use lsp::{handle_hover, handle_rename_symbol, handle_symbol_cmd};
 pub use process::{
     handle_await_trigger, handle_define_trigger, handle_search_output, handle_start_process,
     handle_stop_process,

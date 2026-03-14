@@ -35,6 +35,9 @@ result-*
 #ref-srcs/ #if i have it in .gitignore then claude cannot see it
 ref-srcs/httpx/
 
+# Symbol cache
+.cache/
+
 # direnv
 .direnv/
 

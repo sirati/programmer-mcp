@@ -95,3 +95,40 @@ fn test_unknown_command_warns() {
     assert_eq!(parsed.warnings.len(), 1);
     assert!(parsed.warnings[0].contains("unknown command: foobar"));
 }
+
+#[test]
+fn test_cd_only_warns() {
+    let parsed = parse_dsl("cd src/tools");
+    assert!(parsed.operations.is_empty());
+    assert_eq!(parsed.warnings.len(), 1);
+    assert!(parsed.warnings[0].contains("does not persist"));
+}
+
+#[test]
+fn test_cd_at_end_warns() {
+    let parsed = parse_dsl("body [foo]\ncd src/tools");
+    assert_eq!(parsed.operations.len(), 1);
+    assert_eq!(parsed.warnings.len(), 1);
+    assert!(parsed.warnings[0].contains("at end of command chain"));
+}
+
+#[test]
+fn test_cd_before_command_no_warn() {
+    let parsed = parse_dsl("cd src/tools\nbody [foo]");
+    assert_eq!(parsed.operations.len(), 1);
+    assert!(
+        parsed.warnings.is_empty(),
+        "cd before a command should not warn, got: {:?}",
+        parsed.warnings
+    );
+}
+
+#[test]
+fn test_pipe_with_cd() {
+    let parsed = parse_dsl("cd src | body [foo]");
+    assert_eq!(parsed.operations.len(), 1);
+    assert!(
+        parsed.warnings.is_empty(),
+        "cd before pipe command should not warn"
+    );
+}

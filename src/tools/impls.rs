@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use lsp_types::DocumentSymbolResponse;
 
-use super::formatting::uri_to_path;
+use super::formatting::{find_identifier_position, uri_to_path};
 use super::symbol_info::not_found_msg;
 use super::symbol_search::find_symbol_with_fallback;
 use crate::lsp::client::{LspClient, LspClientError};
@@ -16,7 +16,7 @@ pub async fn find_impls(
 ) -> Result<String, LspClientError> {
     let symbols = find_symbol_with_fallback(client, type_name, search_dir).await?;
     if symbols.is_empty() {
-        return Ok(not_found_msg(client, type_name));
+        return Ok(not_found_msg(client, type_name).await);
     }
 
     // Get the file where the type is defined
@@ -25,10 +25,9 @@ pub async fn find_impls(
     let path = uri_to_path(uri).unwrap_or_else(|| uri.as_str().to_string());
     client.open_file(&path).await?;
 
-    // Get all references to this type
-    let refs = client
-        .references(uri, sym.location.range.start, true)
-        .await?;
+    // Get all references to this type (position must be on the identifier, not doc comment)
+    let ref_pos = find_identifier_position(&path, &sym.name, sym.location.range.start);
+    let refs = client.references(uri, ref_pos, true).await?;
     let Some(locations) = refs else {
         return Ok(format!("No references found for {type_name}"));
     };

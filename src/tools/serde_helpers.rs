@@ -24,6 +24,10 @@ pub fn default_true() -> bool {
     true
 }
 
+pub fn default_search_limit() -> usize {
+    20
+}
+
 /// Deserialize either a single string or a vec of strings into `Vec<String>`.
 pub fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where

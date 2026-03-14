@@ -433,3 +433,26 @@ problem 2: definition and body are doing the same, lets think about what definit
 
 
 todos: symbol index should also be saved to .cache, .cache files maybe can just contain last changed so we dont need to hash?  when starting .cache should be loaded and only changed files reindexed
+
+
+
+
+BUG BUG
+{
+  "commands": "body [execute_body] | references [read_range_from_file]"
+}
+No references found for symbol: read_range_from_file
+
+---
+
+No references found for symbol: read_range_from_file
+
+---
+
+No references found for symbol: read_range_from_file
+
+---
+
+Some requests found nothing
+"The symbol cache may still be seeding. Let me search directly."
+we always print if we are seeding, so that we did not find the symbol but grep did is a major bug!!

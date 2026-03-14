@@ -30,6 +30,8 @@ pub mod references;
 pub mod rename;
 pub mod serde_helpers;
 pub mod symbol_cache;
+mod symbol_cache_persist;
+mod symbol_cache_seed;
 pub mod symbol_info;
 pub mod symbol_list;
 pub mod symbol_match;
@@ -43,9 +45,5 @@ pub mod workspace;
 pub use execute::execute_batch;
 pub use operation::{Operation, OperationResult};
 
-/// Source file extensions considered relevant across the codebase.
-pub const SOURCE_EXTS: &[&str] = &[
-    "rs", "go", "py", "js", "ts", "tsx", "jsx", "c", "cc", "h", "cpp", "hpp", "java", "kt",
-    "scala", "rb", "ex", "exs", "nix", "toml", "yaml", "yml", "json", "sh", "bash", "zsh", "lua",
-    "zig", "swift", "cs", "fs", "ml", "mli", "hs", "el", "clj", "sql",
-];
+// Re-export the canonical source extension list from detect_lang.
+pub use crate::lsp::detect_lang::SOURCE_EXTS;

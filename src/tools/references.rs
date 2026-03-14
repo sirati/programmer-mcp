@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::sync::Arc;
 
-use super::formatting::{format_lines_with_gaps, lines_to_display, uri_to_path};
+use super::formatting::{
+    find_identifier_position, format_lines_with_gaps, lines_to_display, relative_to, uri_to_path,
+};
 use super::symbol_search::find_symbol_with_fallback;
 use crate::lsp::client::{LspClient, LspClientError};
 
@@ -19,6 +21,7 @@ pub async fn find_references(
         return Ok(format!("No references found for symbol: {symbol_name}"));
     }
 
+    let ws_root = client.workspace_root();
     let mut all_output = String::new();
 
     for symbol in &symbols {
@@ -30,8 +33,13 @@ pub async fn find_references(
             continue;
         }
 
+        // The symbol range start may point at a doc comment or attribute, not the
+        // identifier itself. Find the actual identifier position in the file so
+        // that textDocument/references works correctly.
+        let ref_pos = find_identifier_position(&path, &symbol.name, loc.range.start);
+
         let refs = client
-            .references(&loc.uri, loc.range.start, false)
+            .references(&loc.uri, ref_pos, false)
             .await?
             .unwrap_or_default();
 
@@ -49,12 +57,13 @@ pub async fn find_references(
         }
 
         for (uri_str, file_refs) in &by_file {
-            let file_path = uri_str.strip_prefix("file://").unwrap_or(uri_str);
+            let abs_path = uri_str.strip_prefix("file://").unwrap_or(uri_str);
+            let rel_path = relative_to(abs_path, ws_root);
 
-            let content = match std::fs::read_to_string(file_path) {
+            let content = match std::fs::read_to_string(abs_path) {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = writeln!(all_output, "---\n\n{file_path}\nError: {e}");
+                    let _ = writeln!(all_output, "---\n\n{rel_path}\nError: {e}");
                     continue;
                 }
             };
@@ -77,7 +86,7 @@ pub async fn find_references(
 
             let _ = write!(
                 all_output,
-                "---\n\n{file_path}\nReferences in File: {}\nAt: {}\n\n{formatted}",
+                "---\n\n{rel_path}\nReferences in File: {}\nAt: {}\n\n{formatted}",
                 file_refs.len(),
                 loc_strings.join(", "),
             );

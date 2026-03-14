@@ -74,7 +74,7 @@ use std::path::{Path, PathBuf};
 use crate::tools::Operation;
 
 use ops::{has_extension, normalize_path, resolve_cd_path, *};
-use parse::{split_first_word, strip_comment};
+use parse::{split_first_word, split_pipe, strip_comment, unquote};
 
 /// Result of parsing a DSL script: operations to execute and any warnings.
 pub struct ParseResult {
@@ -108,15 +108,39 @@ pub fn parse_dsl_with_options(commands: &str, options: &DslOptions) -> ParseResu
         ..Default::default()
     };
 
+    let mut total_cmds = 0u32;
+    let mut last_was_cd = false;
+
     for raw_line in commands.lines() {
-        // Support `|` as an inline command separator
-        for segment in raw_line.split('|') {
-            let line = strip_comment(segment).trim();
+        // Support `|` as an inline command separator (quote-aware)
+        for segment in split_pipe(raw_line) {
+            let line = strip_comment(&segment).trim();
             if line.is_empty() {
                 continue;
             }
             let (cmd, args) = split_first_word(line);
+            total_cmds += 1;
+            last_was_cd = cmd == "cd";
             ctx.dispatch(&mut ops, &mut warnings, cmd, args);
+        }
+    }
+
+    // Warn about cd misuse: cd does not persist between execute calls
+    if last_was_cd && total_cmds > 0 {
+        if ops.is_empty() {
+            // Only cd commands were issued
+            warnings.push(
+                "cd does not persist between execute calls. \
+                 It only scopes commands that follow it within the same execute."
+                    .into(),
+            );
+        } else {
+            // cd was the last command — it has no effect
+            warnings.push(
+                "cd at end of command chain has no effect. \
+                 cd only scopes commands that follow it within the same execute."
+                    .into(),
+            );
         }
     }
 
@@ -159,58 +183,11 @@ impl DslContext {
             "code_action" => handle_code_action(ops, args, &self.cd_dir, self.cd_file.as_deref()),
 
             // symbol-based (with bare-arg warnings)
-            "body" => handle_symbol_cmd(
+            "body" | "definition" | "references" | "docstring" | "impls" | "callers"
+            | "callees" => handle_symbol_cmd(
                 ops,
                 warnings,
-                "body",
-                args,
-                &self.cd_dir,
-                self.cd_file.as_deref(),
-            ),
-            "definition" => handle_symbol_cmd(
-                ops,
-                warnings,
-                "definition",
-                args,
-                &self.cd_dir,
-                self.cd_file.as_deref(),
-            ),
-            "references" => handle_symbol_cmd(
-                ops,
-                warnings,
-                "references",
-                args,
-                &self.cd_dir,
-                self.cd_file.as_deref(),
-            ),
-            "docstring" => handle_symbol_cmd(
-                ops,
-                warnings,
-                "docstring",
-                args,
-                &self.cd_dir,
-                self.cd_file.as_deref(),
-            ),
-            "impls" => handle_symbol_cmd(
-                ops,
-                warnings,
-                "impls",
-                args,
-                &self.cd_dir,
-                self.cd_file.as_deref(),
-            ),
-            "callers" => handle_symbol_cmd(
-                ops,
-                warnings,
-                "callers",
-                args,
-                &self.cd_dir,
-                self.cd_file.as_deref(),
-            ),
-            "callees" => handle_symbol_cmd(
-                ops,
-                warnings,
-                "callees",
+                cmd,
                 args,
                 &self.cd_dir,
                 self.cd_file.as_deref(),
@@ -277,10 +254,11 @@ impl DslContext {
     }
 
     fn handle_cd(&mut self, path: &str) {
-        let path = path.trim();
+        let path = unquote(path.trim());
         if path.is_empty() {
             return;
         }
+        let path = path.as_str();
         let raw = if Path::new(path).is_absolute() {
             PathBuf::from(path)
         } else {

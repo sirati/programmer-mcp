@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use lsp_types::{HoverContents, MarkedString};
 
-use super::formatting::{path_to_uri, to_lsp_position};
+use super::formatting::{find_identifier_position, path_to_uri, to_lsp_position, uri_to_path};
 use super::language_specific;
+use super::symbol_search::find_symbol_with_fallback;
 use crate::lsp::client::{LspClient, LspClientError};
 
 /// Get hover information at a specific position in a file.
@@ -47,6 +48,34 @@ fn format_marked_string(s: &MarkedString) -> String {
     match s {
         MarkedString::String(text) => text.clone(),
         MarkedString::LanguageString(ls) => format!("```{}\n{}\n```", ls.language, ls.value),
+    }
+}
+
+/// Get hover information for a symbol by name (resolves position automatically).
+pub async fn hover_symbol(
+    client: &Arc<LspClient>,
+    symbol_name: &str,
+    search_dir: Option<&str>,
+) -> Result<String, LspClientError> {
+    let symbols = find_symbol_with_fallback(client, symbol_name, search_dir).await?;
+    if symbols.is_empty() {
+        return Ok(format!("{symbol_name} not found"));
+    }
+
+    let sym = &symbols[0];
+    let path =
+        uri_to_path(&sym.location.uri).unwrap_or_else(|| sym.location.uri.as_str().to_string());
+    client.open_file(&path).await?;
+
+    let pos = find_identifier_position(&path, &sym.name, sym.location.range.start);
+    let hover = client.hover(&sym.location.uri, pos).await?;
+
+    match hover {
+        Some(h) => Ok(clean_hover_text(
+            client.language(),
+            &format_hover_contents(&h.contents),
+        )),
+        None => Ok(format!("No hover information for {symbol_name}")),
     }
 }
 

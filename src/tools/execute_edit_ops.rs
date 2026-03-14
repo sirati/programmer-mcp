@@ -1,7 +1,5 @@
 //! Edit operation dispatch: Edit, ApplyEdit, Undo, EditRange.
 
-use std::sync::Arc;
-
 use crate::config::LengthLimits;
 use crate::lsp::manager::LspManager;
 

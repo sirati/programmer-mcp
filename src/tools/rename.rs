@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use lsp_types::{DocumentChangeOperation, DocumentChanges, OneOf, TextEdit, Uri};
 
-use super::formatting::{path_to_uri, to_lsp_position, uri_to_path};
+use super::formatting::{find_identifier_position, path_to_uri, to_lsp_position, uri_to_path};
+use super::symbol_search::find_symbol_with_fallback;
 use crate::lsp::client::{LspClient, LspClientError};
 
 /// Rename a symbol at a given position and apply changes to the workspace.
@@ -122,6 +123,71 @@ pub async fn rename_symbol(
     Ok(format!(
         "Successfully renamed symbol to '{new_name}'.\n\
          Updated {change_count} occurrences across {file_count} files:\n{details}"
+    ))
+}
+
+/// Rename a symbol by name (resolves position automatically).
+pub async fn rename_by_symbol(
+    client: &Arc<LspClient>,
+    symbol_name: &str,
+    new_name: &str,
+    search_dir: Option<&str>,
+) -> Result<String, LspClientError> {
+    let symbols = find_symbol_with_fallback(client, symbol_name, search_dir).await?;
+    if symbols.is_empty() {
+        return Ok(format!("{symbol_name} not found"));
+    }
+
+    let sym = &symbols[0];
+    let path =
+        uri_to_path(&sym.location.uri).unwrap_or_else(|| sym.location.uri.as_str().to_string());
+    client.open_file(&path).await?;
+
+    let pos = find_identifier_position(&path, &sym.name, sym.location.range.start);
+    // Delegate to the position-based rename with the resolved position
+    let edit = client.rename(&sym.location.uri, pos, new_name).await?;
+
+    let edit = match edit {
+        Some(e) => e,
+        None => {
+            return Ok(format!(
+                "Failed to rename '{symbol_name}'. No edit returned."
+            ))
+        }
+    };
+
+    apply_workspace_edit(&edit)?;
+
+    // Count changes for reporting
+    let mut change_count = 0u32;
+    let mut file_count = 0u32;
+    if let Some(changes) = &edit.changes {
+        file_count += changes.len() as u32;
+        for edits in changes.values() {
+            change_count += edits.len() as u32;
+        }
+    }
+    if let Some(doc_changes) = &edit.document_changes {
+        match doc_changes {
+            DocumentChanges::Edits(edits) => {
+                file_count += edits.len() as u32;
+                for tde in edits {
+                    change_count += tde.edits.len() as u32;
+                }
+            }
+            DocumentChanges::Operations(ops) => {
+                for op in ops {
+                    if let DocumentChangeOperation::Edit(tde) = op {
+                        file_count += 1;
+                        change_count += tde.edits.len() as u32;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(format!(
+        "Renamed '{symbol_name}' → '{new_name}': {change_count} occurrences in {file_count} files"
     ))
 }
 

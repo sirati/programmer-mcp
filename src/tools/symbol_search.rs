@@ -9,6 +9,7 @@ use heck::{ToLowerCamelCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
 use lsp_types::SymbolInformation;
 use tracing::debug;
 
+use super::formatting::is_external_path;
 use super::symbol_match::container_matches;
 use super::symbol_parent_child::{
     best_fuzzy_matches, name_has_receiver, try_index_parent_doc_child,
@@ -16,6 +17,33 @@ use super::symbol_parent_child::{
 };
 use super::symbol_walk::try_directory_walk;
 use crate::lsp::client::LspClient;
+
+/// Deduplicate symbols that refer to the same definition.
+///
+/// workspace/symbol and documentSymbol may return the same symbol with
+/// slightly different start positions (e.g., one includes the doc comment,
+/// the other points at the name). We dedup by checking if two symbols with
+/// the same name in the same file have start lines within 5 of each other.
+fn dedup_symbols(symbols: Vec<SymbolInformation>) -> Vec<SymbolInformation> {
+    let mut result: Vec<SymbolInformation> = Vec::new();
+    for sym in symbols {
+        let dominated = result.iter().any(|existing| {
+            existing.location.uri == sym.location.uri
+                && existing.name == sym.name
+                && existing
+                    .location
+                    .range
+                    .start
+                    .line
+                    .abs_diff(sym.location.range.start.line)
+                    <= 5
+        });
+        if !dominated {
+            result.push(sym);
+        }
+    }
+    result
+}
 
 /// Generate case variations of a symbol name for fuzzy matching.
 pub fn case_variations(name: &str) -> Vec<String> {
@@ -53,6 +81,31 @@ pub fn filter_exact_matches(symbols: &[SymbolInformation], name: &str) -> Vec<Sy
 }
 
 /// Search for a symbol, trying index-based lookups first, then LSP round-trips.
+/// Results are deduplicated by location. When both workspace and external results
+/// exist for the same symbol name, external results are filtered out.
+pub async fn find_symbol_with_fallback(
+    client: &Arc<LspClient>,
+    name: &str,
+    search_dir: Option<&str>,
+) -> Result<Vec<SymbolInformation>, crate::lsp::client::LspClientError> {
+    let results = find_symbol_inner(client, name, search_dir).await?;
+    let deduped = dedup_symbols(results);
+
+    // Prefer workspace results over external (stdlib, registry, nix store)
+    let has_workspace = deduped
+        .iter()
+        .any(|s| !is_external_path(s.location.uri.as_str()));
+    if has_workspace {
+        Ok(deduped
+            .into_iter()
+            .filter(|s| !is_external_path(s.location.uri.as_str()))
+            .collect())
+    } else {
+        Ok(deduped)
+    }
+}
+
+/// Internal symbol search with fallback strategies.
 ///
 /// For dotted names (e.g. `Client.send`), resolution order:
 ///   1. Index: child by name + container filter (O(1), most precise)
@@ -67,7 +120,7 @@ pub fn filter_exact_matches(symbols: &[SymbolInformation], name: &str) -> Vec<Sy
 ///   2. workspace/symbol exact + case variations + fuzzy
 ///   3. Nucleo fuzzy index
 ///   4. Directory walk fallback
-pub async fn find_symbol_with_fallback(
+async fn find_symbol_inner(
     client: &Arc<LspClient>,
     name: &str,
     search_dir: Option<&str>,

@@ -8,7 +8,7 @@ mod file_sync;
 mod requests;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use jsonrpsee::async_client::{Client, ClientBuilder};
@@ -62,6 +62,7 @@ struct OpenFileInfo {
 pub struct LspClient {
     rpc: Client,
     language: String,
+    workspace_root: PathBuf,
     open_files: Arc<RwLock<HashMap<String, OpenFileInfo>>>,
     diagnostics: Arc<RwLock<HashMap<String, Vec<Diagnostic>>>>,
     symbol_cache: SymbolCache,
@@ -106,6 +107,7 @@ impl LspClient {
         Ok(Self {
             rpc,
             language: language.to_string(),
+            workspace_root: workspace.to_path_buf(),
             open_files: Arc::new(RwLock::new(HashMap::new())),
             diagnostics: Arc::new(RwLock::new(HashMap::new())),
             symbol_cache: SymbolCache::new(),
@@ -279,6 +281,10 @@ impl LspClient {
 
     pub fn language(&self) -> &str {
         &self.language
+    }
+
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
     }
 
     pub fn symbol_cache(&self) -> &SymbolCache {
